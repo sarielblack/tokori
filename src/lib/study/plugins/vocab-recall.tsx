@@ -7,7 +7,6 @@ import {
   ChevronLeft,
   Loader2,
   MoreHorizontal,
-  Pause,
   Play,
   RocketIcon,
   RotateCcw,
@@ -69,12 +68,10 @@ import {
   useStudyConfig,
 } from "@/lib/study-config";
 import { lookupDictCached } from "@/lib/word-lookup";
-import { fromDict, type LookupResult } from "@/lib/lookup-result";
+import { formatPartOfSpeech, fromDict, type LookupResult } from "@/lib/lookup-result";
 import { gradeIntervalHints } from "@/lib/fsrs";
 import {
   FSRS_INTERVAL_HINTS,
-  GradeKeyChips,
-  GradeRow,
   KeyChip,
   NotesDrawer,
   SideRail,
@@ -93,6 +90,7 @@ import {
 } from "@/lib/study/vocab-recall-session";
 import { cn } from "@/lib/utils";
 import { HOSTED } from "@/lib/build-flags";
+import { navigateToTab } from "@/lib/nav-event";
 
 // How far ahead a card is re-inserted when it needs to come back later
 // in the same session. "Again" grades retry soon; a freshly-introduced
@@ -301,7 +299,7 @@ function StudyView({ ctx }: StudyViewProps) {
   // and any CJK session with Pinyin mode on — collapse them since the
   // reading is already on screen.
   //   "word" → pronunciation gate → "reading" → meaning gate → "graded"
-  //   "graded" → Again/Hard/Good/Easy
+  //   "graded" → unfamiliar/familiar (Again/Good internally)
   // Yes/No answers bias the suggested grade highlight.
   const useTwoQuestions = isTwoQuestionLang && !pinyinMode;
   const [stage, setStage] = useState<Stage>(
@@ -335,20 +333,21 @@ function StudyView({ ctx }: StudyViewProps) {
     resetStages();
   }
 
-  // Keep the session alive while studying — but never fight a manual
-  // pause. `ctx` is rebuilt as the session clock ticks; re-running
+  // Keep the session alive while actually studying — but never fight a
+  // manual pause. The prestart picker is deliberately excluded: opening
+  // Review and then backing out should not create a zero-card session row.
+  // `ctx` is rebuilt as the session clock ticks; re-running
   // ensureSessionStarted on each rebuild is what keeps the 5-minute
-  // idle-timeout from firing on an actively-open study screen (e.g.
-  // while the user reads the AI panel). The `paused` guard is the fix:
-  // without it, the rebuild that happens the instant we pause would call
-  // ensureSessionStarted, which auto-resumes a paused session — so the
-  // pause (and the frozen clock) wouldn't stick.
+  // idle-timeout from firing on an actively-open study screen (e.g. while
+  // the user reads the AI panel). The `paused` guard is the fix: without it,
+  // the rebuild that happens the instant we pause would call
+  // ensureSessionStarted, which auto-resumes a paused session.
   useEffect(() => {
-    if (studyPaused) return;
+    if (studyPaused || sessionSize == null || initialQueue.length === 0) return;
     void ctx.ensureSessionStarted("review").then((id) => {
       if (id != null) setSessionId((previous) => previous ?? id);
     });
-  }, [ctx, studyPaused]);
+  }, [ctx, initialQueue.length, sessionSize, studyPaused]);
 
   const card = queue[idx];
 
@@ -481,14 +480,12 @@ function StudyView({ ctx }: StudyViewProps) {
     };
   }, [card?.id, card?.hasImage]);
 
-  // Suggested grade pre-highlights a button. Yes/Yes → Good; one No → Hard;
-  // both No → Again. Easy is never auto-suggested.
+  // Suggested grade pre-highlights one of the two learner-facing choices.
+  // Internally, familiar maps to Good and unfamiliar maps to Again.
   const suggestedGrade = ((): Grade => {
     if (useTwoQuestions) {
       if (knewPronunciation && knewMeaning) return "good";
-      if (knewPronunciation === false && knewMeaning === false) return "again";
-      if (knewPronunciation === false || knewMeaning === false) return "hard";
-      return "good";
+      return "again";
     }
     return knewMeaning === false ? "again" : "good";
   })();
@@ -628,10 +625,8 @@ function StudyView({ ctx }: StudyViewProps) {
   //       Enter           default-positive (yes)
   //
   //   • Graded stage:
-  //       1 / a   again
-  //       2 / s   hard
-  //       3 / d   good
-  //       4 / f   easy
+  //       1 / a / ←   unfamiliar (Again)
+  //       2 / d / →   familiar (Good)
   //       Enter   suggested grade
   //
   //   • Always when no card-grading is on the wire:
@@ -695,7 +690,7 @@ function StudyView({ ctx }: StudyViewProps) {
         return;
       }
 
-      // Graded stage takes priority — `a` here is Again, not AI.
+      // Graded stage takes priority — `a` here is unfamiliar, not AI.
       if (stage === "graded") {
         if (e.key === "Enter") {
           e.preventDefault();
@@ -704,13 +699,11 @@ function StudyView({ ctx }: StudyViewProps) {
         }
         const gradeMap: Record<string, Grade> = {
           "1": "again",
-          "2": "hard",
-          "3": "good",
-          "4": "easy",
+          "2": "good",
           a: "again",
-          s: "hard",
           d: "good",
-          f: "easy",
+          ArrowLeft: "good",
+          ArrowRight: "again",
         };
         const g = gradeMap[e.key] ?? gradeMap[k];
         if (g) {
@@ -801,6 +794,7 @@ function StudyView({ ctx }: StudyViewProps) {
         setDrillMode={ctx.setDrillMode}
         srsAnchorState={ctx.srsAnchorState}
         onPick={(n) => setSessionSize(n)}
+        onBack={ctx.onChangeMode}
       />
     );
   }
@@ -820,6 +814,13 @@ function StudyView({ ctx }: StudyViewProps) {
       grades,
       reviewedCards,
     });
+  };
+
+  // Leaving from the top-left arrow is a pause-for-later action, not a
+  // completed study session. Keep the snapshot intact so Home can offer a
+  // real resume target instead of silently starting the picker again.
+  const leaveForLater = () => {
+    navigateToTab("dashboard");
   };
 
   // Auto-finalize when the recall queue is exhausted AND there's
@@ -891,11 +892,6 @@ function StudyView({ ctx }: StudyViewProps) {
     }
     // "graded" stage doesn't accept Yes/No — the user picks a real grade.
   }
-
-  // True when at least one gate answered No — drives a streamlined
-  // post-reveal UI with a single "Done" button instead of the four grades.
-  const cameFromNo =
-    knewPronunciation === false || knewMeaning === false;
 
   async function grade(g: Grade) {
     if (!card) return;
@@ -986,14 +982,13 @@ function StudyView({ ctx }: StudyViewProps) {
 
   return (
     <>
-          <TopActionBar
+      <TopActionBar
             idx={idx}
         total={queue.length}
         onKnown={() => void actionKnown()}
         onBoost={() => void actionBoost()}
         onBlock={() => setPendingBlock(card)}
-        onPause={doPause}
-        onExit={finishToSummary}
+        onExit={leaveForLater}
         onBack={goToPreviousCard}
         canGoBack={idx > 0}
         readOnly={previewOnly}
@@ -1042,12 +1037,12 @@ function StudyView({ ctx }: StudyViewProps) {
                 intro (the whole card is the lesson there). CJK +
                 readingMode=hidden gates it behind the first Yes/No
                 question otherwise. */}
-            <div className="mt-4 flex items-center gap-2">
+            <div className="mt-5 flex min-h-7 items-baseline gap-2 pl-0.5">
               {pronunciation &&
                 (introShowing || !readingHidden || stage !== "word") && (
                   <>
                     {ctx.workspace.targetLang === "en" ? (
-                      <span className="text-[15px] tracking-wide text-muted-foreground">
+                        <span className="text-[15px] leading-6 tracking-wide text-muted-foreground">
                         /{pronunciation.replace(/^\/+|\/+$/g, "")}/
                       </span>
                     ) : (
@@ -1059,15 +1054,15 @@ function StudyView({ ctx }: StudyViewProps) {
                 <SpeakButton
                   text={card.word}
                   lang="en"
-                  size="sm"
+                  size="xs"
                   title="Play English pronunciation"
                   className="rounded-full border border-border/50 bg-background/20 px-2"
                 />
               )}
             </div>
-            {dictionaryEntry?.partOfSpeech && (
-              <div className="mt-3 text-[15px] font-medium text-muted-foreground">
-                {dictionaryEntry.partOfSpeech}
+            {formatPartOfSpeech(dictionaryEntry?.partOfSpeech) && (
+              <div className="mt-3 text-[14px] font-light italic leading-6 text-muted-foreground/85">
+                {formatPartOfSpeech(dictionaryEntry?.partOfSpeech)}
               </div>
             )}
 
@@ -1086,23 +1081,17 @@ function StudyView({ ctx }: StudyViewProps) {
                   </p>
                 )}
                 {dictionaryEntry?.examples && dictionaryEntry.examples.length > 0 && (
-                  <div className="max-w-3xl rounded-2xl border border-border/30 bg-background/20 px-4 py-3 backdrop-blur-sm">
-                    <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                      Dictionary example
-                    </p>
+                  <div className="-ml-4 max-w-3xl rounded-2xl border border-border/30 bg-background/20 px-4 py-3 backdrop-blur-sm">
                     <p className="text-[15px] leading-7 text-foreground/90">
                       {dictionaryEntry.examples[0].target}
                     </p>
                     {dictionaryEntry.examples[0].native && (
-                      <p className="mt-1 text-[13px] leading-6 text-muted-foreground">
+                      <p className="mt-1 text-[15px] leading-7 text-muted-foreground">
                         {dictionaryEntry.examples[0].native}
                       </p>
                     )}
                   </div>
                 )}
-                <MorphologyPanel
-                  notes={cardNotesOverride[card.id] ?? card.cardNotes}
-                />
                 {config.showExamples && (
                   <ExampleSection
                     card={card}
@@ -1124,11 +1113,12 @@ function StudyView({ ctx }: StudyViewProps) {
           {/* First-time intro controls — replace the gate until the
               user has actually studied the card once. */}
           {introShowing && (
-              <div className="mt-8 flex justify-center px-2">
+              <div className="mt-5 flex justify-center px-2">
               <Button
-                size="lg"
+                variant="ghost"
+                size="sm"
                 onClick={dismissIntro}
-                className="rounded-full px-8"
+                className="h-8 rounded-full px-3 text-xs font-medium text-muted-foreground hover:bg-background/45 hover:text-foreground"
               >
                 Next card <ArrowRight className="size-4" />
               </Button>
@@ -1174,35 +1164,12 @@ function StudyView({ ctx }: StudyViewProps) {
             />
           )}
 
-          {stage === "graded" && cameFromNo && !previewOnly && (
-            // "I said No" path — the reveal panel above already
-            // shows the full answer (reading + meaning). One big
-            // "Done — next card" button records the lapse as
-            // again-grade and advances. No four-button grade
-            // picker here: when the user has already said they
-            // didn't know it, surfacing Hard / Good / Easy is just
-            // friction. The user can always upgrade to Hard via the
-            // separate keyboard shortcut (`2`) if they realised
-            // post-reveal that they actually did remember.
-            <div className="mt-5 flex flex-col items-center gap-2">
-              <Button
-                size="lg"
-                onClick={() => void grade("again")}
-                className="rounded-full px-8"
-              >
-                Done studying — next card
-              </Button>
-            </div>
-          )}
-          {stage === "graded" && !cameFromNo && !previewOnly && (
-            <>
-              <GradeRow
-                className="mt-5"
-                onGrade={(g) => void grade(g)}
-                suggested={suggestedGrade}
-                hints={intervalHints}
-              />
-            </>
+          {stage === "graded" && !previewOnly && (
+            <FamiliarityRow
+              onGrade={(g) => void grade(g)}
+              unfamiliarHint={intervalHints.again}
+              familiarHint={intervalHints.good}
+            />
           )}
         </div>
 
@@ -1326,81 +1293,43 @@ function StudyView({ ctx }: StudyViewProps) {
   );
 }
 
-
-function MorphologyPanel({
-  notes,
+/**
+ * Learner-facing recall choice. Keep the scheduler's four FSRS grades
+ * internal: this mode only asks the question that matters in the moment —
+ * did the word feel familiar or not? Familiar uses Good (a longer interval),
+ * while unfamiliar uses Again (the first short learning step).
+ */
+function FamiliarityRow({
+  onGrade,
+  unfamiliarHint,
+  familiarHint,
 }: {
-  notes: string | null | undefined;
+  onGrade: (grade: Grade) => void;
+  unfamiliarHint: string;
+  familiarHint: string;
 }) {
-  const morphology = parseMorphology(notes);
-  if (!morphology) return null;
-  const rows = [
-    ["词根", morphology.root],
-    ["构词组成", morphology.components?.join(" + ")],
-    ["前缀", morphology.prefixes?.join(" · ")],
-    ["后缀", morphology.suffixes?.join(" · ")],
-    ["词族", morphology.family?.join(" · ")],
-  ].filter(([, value]) => value);
-  if (
-    rows.length === 0 &&
-    !morphology.note &&
-    (!morphology.dictionaryAffixes || morphology.dictionaryAffixes.length === 0)
-  ) {
-    return null;
-  }
   return (
-    <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-left text-[12px] leading-relaxed">
-      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-        {morphology.source === "ai"
-          ? "构词提示 · 本地 AI（非词典词源）"
-          : "Word formation"}
-      </div>
-      {morphology.source === "ai" && morphology.confidence && (
-        <div className="mb-1 text-[10px] text-muted-foreground/80">
-          可信度：{morphology.confidence === "high" ? "高" : morphology.confidence === "medium" ? "中" : "低"}
-        </div>
-      )}
-      {rows.map(([label, value]) => (
-        <div key={label} className="flex gap-2">
-          <span className="shrink-0 text-muted-foreground">{label}</span>
-          <span className="min-w-0 break-words text-foreground/90">{value}</span>
-        </div>
-      ))}
-      {morphology.note && (
-        <p className="mt-1 text-muted-foreground">{morphology.note}</p>
-      )}
-      {morphology.dictionaryAffixes && morphology.dictionaryAffixes.length > 0 && (
-        <div className="mt-2 border-t border-border/40 pt-2">
-          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Collins 词缀参考
-          </div>
-          <div className="space-y-1.5">
-            {morphology.dictionaryAffixes.map((entry) => (
-              <div key={`${entry.type}:${entry.affix}`} className="space-y-0.5">
-                <div className="flex gap-2">
-                  <span className="shrink-0 font-medium text-foreground/90">
-                    {entry.affix}
-                  </span>
-                  <span className="text-muted-foreground">
-                    {entry.type === "prefix" ? "前缀" : "后缀"}
-                  </span>
-                  {entry.meaningZh && (
-                    <span className="min-w-0 break-words text-foreground/90">
-                      {entry.meaningZh}
-                    </span>
-                  )}
-                </div>
-                {entry.definitionEn && (
-                  <div className="break-words text-muted-foreground">{entry.definitionEn}</div>
-                )}
-                {entry.exampleEn && (
-                  <div className="break-words text-muted-foreground/80">{entry.exampleEn}</div>
-                )}
-              </div>
-            ))}
-          </div>
-      </div>
-      )}
+    <div className="ml-2 mt-5 grid w-full max-w-3xl grid-cols-2 gap-4 sm:gap-6">
+      <button
+        type="button"
+        onClick={() => onGrade("good")}
+        className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-border/70 bg-background/20 px-4 py-2 text-foreground transition-colors hover:border-foreground/35 hover:bg-background/45"
+      >
+        <span className="text-[15px] font-medium">熟</span>
+        <span className="mt-0.5 text-[11px] text-muted-foreground">
+          晚些再复习 · {familiarHint}
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={() => onGrade("again")}
+        className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-border/70 bg-background/20 px-4 py-2 text-foreground transition-colors hover:border-foreground/35 hover:bg-background/45"
+      >
+        <span className="text-[15px] font-medium">不熟</span>
+        <span className="mt-0.5 text-[11px] text-muted-foreground">
+          很快再复习 · {unfamiliarHint}
+        </span>
+      </button>
     </div>
   );
 }
@@ -1631,11 +1560,11 @@ function ExampleSection({
   }
 
   return (
-    <div className="mt-3 space-y-2 text-left">
+    <div className="mt-3 -ml-4 max-w-3xl space-y-2 text-left">
       {example ? (
         <div className="min-w-0 rounded-2xl border border-border/50 bg-background/25 px-4 py-3 backdrop-blur-sm">
           <div className="flex min-w-0 items-start gap-1.5">
-            <div className="min-w-0 flex-1 break-words text-[16px] leading-8 text-foreground/95 sm:text-[18px]">
+            <div className="min-w-0 flex-1 break-words text-[15px] leading-7 text-foreground/95">
               <Tokenized text={example.target} lang={targetLang as LanguageCode} decoration="subtle" />
             </div>
             <SpeakButton
@@ -1647,7 +1576,7 @@ function ExampleSection({
             />
           </div>
           {example.native?.trim() ? (
-            <p className="mt-2 text-[14px] leading-7 text-muted-foreground">{example.native}</p>
+            <p className="mt-1 text-[15px] leading-7 text-muted-foreground">{example.native}</p>
           ) : (
             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
               <span>No Chinese translation yet.</span>
@@ -1889,12 +1818,14 @@ function SessionSizePicker({
   setDrillMode,
   srsAnchorState,
   onPick,
+  onBack,
 }: {
   totalDue: number;
   drillMode: boolean;
   setDrillMode: (next: boolean) => void;
   srsAnchorState: "unknown" | "free" | "alreadyAnchored";
   onPick: (n: number) => void;
+  onBack?: () => void;
 }) {
   const presets: number[] = [];
   if (totalDue > 20) presets.push(20);
@@ -1909,6 +1840,7 @@ function SessionSizePicker({
         drillMode={drillMode}
         setDrillMode={setDrillMode}
         srsAnchorState={srsAnchorState}
+        onBack={onBack}
       />
     );
   }
@@ -1921,6 +1853,7 @@ function SessionSizePicker({
       drillMode={drillMode}
       setDrillMode={setDrillMode}
       srsAnchorState={srsAnchorState}
+      onBack={onBack}
     >
       <div className="flex flex-wrap items-center justify-center gap-2">
         {presets.map((n) => (
@@ -2405,7 +2338,6 @@ function TopActionBar({
   onKnown,
   onBoost,
   onBlock,
-  onPause,
   onExit,
   onBack,
   canGoBack,
@@ -2416,7 +2348,6 @@ function TopActionBar({
   onKnown: () => void;
   onBoost: () => void;
   onBlock: () => void;
-  onPause: () => void;
   onExit: () => void;
   onBack: () => void;
   canGoBack: boolean;
@@ -2442,9 +2373,6 @@ function TopActionBar({
           </p>
         </div>
         <div className="flex items-center gap-1 rounded-full border border-border/40 bg-background/35 px-2 py-1 backdrop-blur-md">
-          <TopActionButton onClick={onPause} tooltip="Pause  ·  Space">
-            <Pause className="size-4" />
-          </TopActionButton>
           <div className="relative">
             <TopActionButton
               onClick={() => setMoreOpen((open) => !open)}
@@ -2554,7 +2482,7 @@ function PauseOverlay({
   reviewedCount,
   total,
   grades,
-  activeSecs,
+  activeSecs: _activeSecs,
   onResume,
   onEnd,
 }: {
@@ -2567,7 +2495,6 @@ function PauseOverlay({
   onResume: () => void;
   onEnd: () => void;
 }) {
-  const minutes = Math.max(1, Math.round(activeSecs / 60));
   const correct = grades.good + grades.easy;
   const accuracy = reviewedCount > 0 ? Math.round((correct / reviewedCount) * 100) : 0;
   return (
@@ -2591,10 +2518,9 @@ function PauseOverlay({
         </div>
 
         {reviewedCount > 0 && (
-          <div className="mt-6 grid grid-cols-3 gap-3">
+          <div className="mt-6 grid grid-cols-2 gap-3">
             <PauseStat label="Reviewed" value={String(reviewedCount)} />
             <PauseStat label="Accuracy" value={`${accuracy}%`} />
-            <PauseStat label="Time" value={`${minutes}m`} />
           </div>
         )}
 
@@ -2655,7 +2581,12 @@ function KeyboardHintBar({ stage }: { stage: "word" | "reading" | "graded" }) {
       </div>
 
       {/* Grade row — only meaningful in graded stage. */}
-      {stage === "graded" && <GradeKeyChips />}
+          {stage === "graded" && (
+            <div className="flex items-center gap-1">
+              <KeyChip k={["1", "a"]} label="不熟" />
+              <KeyChip k={["2", "d"]} label="熟" />
+            </div>
+          )}
 
       {/* Session controls — always available. */}
       <div className="flex items-center gap-2 text-[9.5px]">
@@ -2738,11 +2669,11 @@ function VocabRecallSettings() {
             <code className="mx-1 rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
               hjkl
             </code>
-            , and{" "}
+            , and 1/2 for{" "}
             <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
-              asdf
+              熟 / 不熟
             </code>{" "}
-            grades). Hide once you&apos;ve memorised them.
+            choices). Hide once you&apos;ve memorised them.
           </span>
         </span>
       </label>

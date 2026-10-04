@@ -111,6 +111,11 @@ import {
   type WidgetSize,
 } from "@/lib/widget-registry";
 import {
+  getVocabRecallSnapshotSessionId,
+  hasVocabRecallSnapshot,
+  setVocabRecallResumeIntent,
+} from "@/lib/study/vocab-recall-session";
+import {
   loadDashboardLayout,
   saveDashboardLayout,
   resetDashboardLayout,
@@ -212,6 +217,21 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
   // state without a page reload.
   useCloudRefresh(refreshAll);
 
+  const workspaceId = workspace?.id ?? 0;
+  // Keep this hook above the loading early-return below. Dashboard data is
+  // loaded asynchronously, so calling it only after `layout` arrives would
+  // change the hook count between the first and second render.
+  const resumableStudySession = useMemo(() => {
+    if (!workspaceId || !hasVocabRecallSnapshot(workspaceId)) return null;
+    const id = getVocabRecallSnapshotSessionId(workspaceId);
+    if (id == null) return null;
+    return (
+      sessions.find(
+        (item) => item.id === id && item.kind === "review",
+      ) ?? null
+    );
+  }, [sessions, workspaceId]);
+
   if (!workspace || !layout) return null;
 
   // Localised greeting in the workspace's target language. A Japanese
@@ -228,6 +248,12 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
   // picker now offers the full uncapped ready pool ("All N") — the picker
   // is where you deliberately decide to grind the whole backlog.
   const sessionQueue = buildStudySessionQueue(due, vocab, studyCfg.config);
+
+  function resumeStudySession() {
+    if (!resumableStudySession) return;
+    setVocabRecallResumeIntent(workspaceId, resumableStudySession.id);
+    onNavigate("flashcards");
+  }
 
   const ctx: WidgetContext = {
     workspace,
@@ -401,7 +427,12 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
             onRemove={removeWidget}
           />
         ) : (
-          <TodayStudyHome ctx={ctx} onNavigate={onNavigate} />
+          <TodayStudyHome
+            ctx={ctx}
+            onNavigate={onNavigate}
+            resumableStudySession={resumableStudySession}
+            onResumeStudy={resumeStudySession}
+          />
         )}
       </div>
     </div>
@@ -433,17 +464,45 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
 function TodayStudyHome({
   ctx,
   onNavigate,
+  resumableStudySession,
+  onResumeStudy,
 }: {
   ctx: WidgetContext;
   onNavigate: (t: TabId) => void;
+  resumableStudySession: StudySession | null;
+  onResumeStudy: () => void;
 }) {
   const queue = ctx.sessionQueue;
   const newCount = queue.filter((card) => card.status === "new").length;
   const reviewCount = queue.length - newCount;
-  const preview = queue.slice(0, 24);
 
   return (
     <div className="space-y-7">
+      {resumableStudySession && (
+        <section className="flex flex-col justify-between gap-4 rounded-2xl border border-primary/25 bg-primary/5 px-5 py-4 shadow-sm backdrop-blur-xl sm:flex-row sm:items-center sm:px-6">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/80">
+              Continue learning
+            </p>
+            <h2 className="mt-1 font-serif text-2xl tracking-tight">
+              Resume your word cards
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              You left this session after {resumableStudySession.wordsSeen} card
+              {resumableStudySession.wordsSeen === 1 ? "" : "s"}. Continue from
+              where you stopped.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={onResumeStudy}
+            className="shrink-0 rounded-full px-5"
+          >
+            Continue
+            <ArrowRight className="size-4" />
+          </Button>
+        </section>
+      )}
       <section className="overflow-hidden rounded-[28px] border border-border/60 bg-card/55 p-6 shadow-sm backdrop-blur-xl sm:p-8">
         <div className="flex flex-col justify-between gap-7 sm:flex-row sm:items-end">
           <div className="max-w-xl">
@@ -475,76 +534,6 @@ function TodayStudyHome({
         </div>
       </section>
 
-      <section>
-        <div className="mb-3 flex items-end justify-between gap-4 px-1">
-          <div>
-            <h2 className="font-serif text-2xl tracking-tight">Today&apos;s cards</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {queue.length === 0
-                ? "Nothing is due right now."
-                : `A paced selection from your ${queue.length} cards for today.`}
-            </p>
-          </div>
-          {queue.length > preview.length && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onNavigate("flashcards")}
-              className="shrink-0 text-xs"
-            >
-              View all
-              <ArrowRight className="size-3.5" />
-            </Button>
-          )}
-        </div>
-
-        {preview.length > 0 ? (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {preview.map((card) => (
-              <button
-                key={card.id}
-                type="button"
-                onClick={() => onNavigate("flashcards")}
-                className="group min-w-0 rounded-2xl border border-border/60 bg-card/45 p-4 text-left shadow-sm backdrop-blur-md transition-colors hover:border-primary/40 hover:bg-card/70"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <span className="min-w-0 break-words font-serif text-xl tracking-tight">
-                    {card.word}
-                  </span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider",
-                      card.status === "new"
-                        ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
-                        : "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
-                    )}
-                  >
-                    {card.status === "new" ? "New" : "Due"}
-                  </span>
-                </div>
-                {card.reading && (
-                  <p className="mt-1 text-xs text-muted-foreground">{card.reading}</p>
-                )}
-                <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-foreground/80">
-                  {card.gloss || "No meaning added yet"}
-                </p>
-                <div className="mt-4 flex items-center justify-end text-[11px] text-muted-foreground transition-colors group-hover:text-foreground">
-                  Study this card
-                  <ArrowRight className="ml-1 size-3" />
-                </div>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-dashed border-border/70 bg-card/35 px-6 py-12 text-center backdrop-blur-md">
-            <BookMarked className="mx-auto size-7 text-muted-foreground/70" />
-            <p className="mt-3 text-sm font-medium">You&apos;re all caught up.</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Add a word or open Flashcards when you want to practice again.
-            </p>
-          </div>
-        )}
-      </section>
     </div>
   );
 }

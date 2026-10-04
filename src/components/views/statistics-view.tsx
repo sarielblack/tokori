@@ -6,17 +6,14 @@
  * queries via the pure helpers in `study-stats.ts` (so the math is tested)
  * and the existing dashboard chart components (so the visuals match Home).
  *
- * The live session timer (`useSession`) feeds the "Today" card: while a
- * session is running, today's studied time ticks up in real time and a
- * "Studying now" pill shows the live clock — so the Progress tab reflects
- * what you're doing this very minute, not just what's been saved.
+ * Study sessions contribute card/review progress. Elapsed time is not used
+ * for in-app study sessions; explicit manual activity logs remain separate.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
   BookOpen,
-  Clock,
   Flame,
   Loader2,
   Repeat2,
@@ -29,7 +26,6 @@ import {
 } from "@/components/dashboard/charts";
 import {
   ActivityExplorer,
-  StudyHoursCard,
   WeeklyReportCard,
 } from "@/components/stats/report-panels";
 import { RecentSessionsCard } from "@/components/stats/recent-sessions";
@@ -43,7 +39,6 @@ import {
 } from "@/lib/db";
 import {
   startOfToday,
-  studyTotals,
   summarizeReviews,
   wordsAddedSince,
   type ReviewSummary,
@@ -54,32 +49,10 @@ import { computeLevel, type ComputedLevel } from "@/lib/level";
 import { languageName } from "@/lib/languages";
 import { useWorkspace } from "@/lib/workspace-context";
 import { useProfile } from "@/lib/profile-context";
-import { useSession } from "@/lib/session-context";
 import { useCloudRefresh } from "@/lib/cloud-refresh";
 import { cn } from "@/lib/utils";
 
 // ── formatters ──────────────────────────────────────────────────────
-
-function pad(n: number): string {
-  return String(n).padStart(2, "0");
-}
-
-/** Human study duration: "0m" / "45m" / "1h 20m" / "3h". */
-function fmtStudy(secs: number): string {
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  const h = Math.floor(mins / 60);
-  const rem = mins % 60;
-  return rem ? `${h}h ${rem}m` : `${h}h`;
-}
-
-/** Live clock for the running session: "m:ss" or "h:mm:ss". */
-function fmtClock(secs: number): string {
-  const s = secs % 60;
-  const m = Math.floor(secs / 60) % 60;
-  const h = Math.floor(secs / 3600);
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
 
 // ── small building blocks ───────────────────────────────────────────
 
@@ -120,21 +93,13 @@ function KpiCard({
 }
 
 function TodayCard({
-  todaySecs,
   wordsToday,
   reviewsToday,
   sessionsToday,
-  active,
-  paused,
-  activeSecs,
 }: {
-  todaySecs: number;
   wordsToday: number;
   reviewsToday: number;
   sessionsToday: number;
-  active: StudySession | null;
-  paused: boolean;
-  activeSecs: number;
 }) {
   return (
     <div className={cn(PANEL, "flex flex-wrap items-end justify-between gap-4")}>
@@ -144,9 +109,9 @@ function TodayCard({
         </div>
         <div className="mt-1 flex items-baseline gap-2">
           <span className="font-serif text-4xl tracking-tight tabular-nums">
-            {fmtStudy(todaySecs)}
+            {reviewsToday}
           </span>
-          <span className="text-[12.5px] text-muted-foreground">studied</span>
+          <span className="text-[12.5px] text-muted-foreground">reviews today</span>
         </div>
         <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
           <span>
@@ -170,32 +135,9 @@ function TodayCard({
         </div>
       </div>
 
-      {/* The session timer, surfaced in the journey. While a session runs,
-          the clock here ticks and the Today total above climbs with it. */}
-      {active ? (
-        <div
-          className={cn(
-            "flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px]",
-            paused
-              ? "border-border bg-muted/40 text-muted-foreground"
-              : "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-          )}
-        >
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              paused ? "bg-muted-foreground" : "animate-pulse bg-emerald-500",
-            )}
-          />
-          {paused ? "Paused" : "Studying now"}
-          <span className="font-medium capitalize">· {active.kind}</span>
-          <span className="font-semibold tabular-nums">{fmtClock(activeSecs)}</span>
-        </div>
-      ) : (
-        <p className="max-w-[16rem] text-[11.5px] text-muted-foreground">
-          Start a session from the sidebar timer to track your study time live.
-        </p>
-      )}
+      <p className="max-w-[16rem] text-[11.5px] text-muted-foreground">
+        Focus on cards and recall quality; study time is not tracked.
+      </p>
     </div>
   );
 }
@@ -302,7 +244,6 @@ function ReviewBreakdown({ summary }: { summary: ReviewSummary }) {
 export function StatisticsPanel() {
   const { active: workspace } = useWorkspace();
   const { profile } = useProfile();
-  const { active: activeSession, activeSecs, paused } = useSession();
 
   const [vocab, setVocab] = useState<VocabEntry[]>([]);
   const [sessions, setSessions] = useState<StudySession[]>([]);
@@ -344,7 +285,6 @@ export function StatisticsPanel() {
     () => currentGrowthBuckets({ vocab, reviews }),
     [vocab, reviews],
   );
-  const totals = useMemo(() => studyTotals(sessions), [sessions]);
   const reviewSummary = useMemo(() => summarizeReviews(reviews), [reviews]);
   const streak = useMemo(() => computeStreak(sessions), [sessions]);
   const best = useMemo(() => longestStreak(sessions), [sessions]);
@@ -362,7 +302,7 @@ export function StatisticsPanel() {
       computeLevel(
         workspace?.targetLang ?? "en",
         buckets.known,
-        totals.totalSecs / 3600,
+        0,
         profile.goalLevel,
         {
           manualLevelId: profile.manualLevelId,
@@ -374,7 +314,6 @@ export function StatisticsPanel() {
     [
       workspace?.targetLang,
       buckets.known,
-      totals.totalSecs,
       profile.goalLevel,
       profile.manualLevelId,
       profile.manualScore,
@@ -385,11 +324,6 @@ export function StatisticsPanel() {
 
   if (!workspace) return null;
 
-  // Today's studied time = completed sessions today + the live running
-  // session (which contributes 0 to `studyTotals` until it ends).
-  const todaySecs =
-    totals.todaySecs + (activeSession ? activeSecs : 0);
-  const weekHours = totals.weekSecs / 3600;
   const firstLoad = loading && vocab.length === 0 && sessions.length === 0;
 
   return (
@@ -402,7 +336,7 @@ export function StatisticsPanel() {
           </div>
           <h1 className="font-serif text-3xl tracking-tight">Your numbers</h1>
           <p className="text-[13px] text-muted-foreground">
-            Words, time, retention, and consistency — the whole picture of your{" "}
+            Words, recall, and consistency — the whole picture of your{" "}
             {languageName(workspace.targetLang)} progress.
           </p>
         </header>
@@ -415,13 +349,9 @@ export function StatisticsPanel() {
         ) : (
           <>
             <TodayCard
-              todaySecs={todaySecs}
               wordsToday={wordsToday}
               reviewsToday={reviewSummary.reviewsToday}
               sessionsToday={sessionsToday}
-              active={activeSession}
-              paused={paused}
-              activeSecs={activeSecs}
             />
 
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -433,11 +363,11 @@ export function StatisticsPanel() {
                 sub={`${buckets.learning} learning · ${buckets.due} due`}
               />
               <KpiCard
-                icon={Clock}
+                icon={Repeat2}
                 accent="sky"
-                label="Study time"
-                value={fmtStudy(totals.totalSecs)}
-                sub={`${weekHours < 1 ? `${Math.round(totals.weekSecs / 60)}m` : `${weekHours.toFixed(1)}h`} this week`}
+                label="Due now"
+                value={buckets.due.toLocaleString()}
+                sub="cards ready to review"
               />
               <KpiCard
                 icon={Flame}
@@ -447,7 +377,7 @@ export function StatisticsPanel() {
                 sub={best > 0 ? `best ${best}d` : "start today"}
               />
               <KpiCard
-                icon={Repeat2}
+                icon={BookOpen}
                 accent="violet"
                 label="Reviews"
                 value={reviewSummary.total.toLocaleString()}
@@ -471,7 +401,12 @@ export function StatisticsPanel() {
 
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <ReviewBreakdown summary={reviewSummary} />
-              <StudyHoursCard sessions={sessions} />
+              <div className={cn(PANEL, "flex flex-col justify-center")}>
+                <h3 className="text-sm font-semibold tracking-tight">Card progress</h3>
+                <p className="mt-1 text-[12px] text-muted-foreground">
+                  {reviewSummary.reviewsToday} reviews today · {buckets.due} cards due now.
+                </p>
+              </div>
             </div>
 
             {/* Editable session log — fix a mis-timed session (or one the

@@ -67,10 +67,11 @@ type SessionContextValue = {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-/** Auto-end the session after this many ms of no activity. Pause
- *  suspends the timer — a paused session never auto-ends until the
- *  user resumes (then idles again) or explicitly stops. */
-const IDLE_END_MS = 5 * 60 * 1000;
+/** Study sessions are progress containers, not timers. Keep the old
+ *  context fields below as no-op compatibility shims for third-party
+ *  study plugins, but never start a clock or infer duration from the
+ *  wall clock. */
+const SESSION_CLOCK_ENABLED = false;
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const { active: workspace } = useWorkspace();
@@ -123,16 +124,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }
 
   const scheduleIdleEnd = useCallback(() => {
+    if (!SESSION_CLOCK_ENABLED) return;
     clearIdle();
     idleTimerRef.current = window.setTimeout(() => {
       void end();
-    }, IDLE_END_MS);
+    }, 5 * 60 * 1000);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** Start the 1-Hz tick that drives `activeSecs`. Called on
    *  start + resume. */
   const startTick = useCallback(() => {
+    if (!SESSION_CLOCK_ENABLED) return;
     clearTick();
     tickRef.current = window.setInterval(() => {
       if (runningSinceRef.current == null) return;
@@ -234,6 +237,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const pause = useCallback(() => {
+    if (!SESSION_CLOCK_ENABLED) return;
     if (!session || runningSinceRef.current == null) return;
     // Freeze the clock on the current segment's contribution.
     const elapsedMs = Date.now() - runningSinceRef.current;
@@ -248,6 +252,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [session]);
 
   const resume = useCallback(() => {
+    if (!SESSION_CLOCK_ENABLED) return;
     if (!session || runningSinceRef.current != null) return;
     autoPausedRef.current = false;
     runningSinceRef.current = Date.now();
@@ -265,14 +270,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       clearIdle();
       clearTick();
       setSession(restored);
-      setActiveSecs(Math.max(0, restored.durationSecs ?? 0));
+      setActiveSecs(0);
       setPaused(false);
       autoPausedRef.current = false;
-      // A resumed row already has elapsed time. Mark it as segmented so
-      // end() writes old duration + the new active segment instead of
-      // counting the time spent away from the app.
-      everPausedRef.current = true;
-      runningSinceRef.current = Date.now();
+      everPausedRef.current = false;
+      runningSinceRef.current = null;
       lastSegmentSecsRef.current = 0;
       startTick();
       scheduleIdleEnd();
@@ -352,9 +354,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       // ensureSessionStarted explicitly (see flashcards-view ctx).
       if (!session) return;
       await bumpSession(session.id, field, by);
-      // bump = activity → reset idle, but only if currently running.
-      // A bump while paused shouldn't silently resume the timer.
-      if (runningSinceRef.current != null) scheduleIdleEnd();
+      // Card activity is persisted independently of elapsed time.
+      if (SESSION_CLOCK_ENABLED && runningSinceRef.current != null) {
+        scheduleIdleEnd();
+      }
     },
     [session, scheduleIdleEnd],
   );

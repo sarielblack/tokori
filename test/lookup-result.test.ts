@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EXAMPLES_DELIMITER,
+  formatPartOfSpeech,
   fromDict,
   parseGlossWithExamples,
 } from "@/lib/lookup-result";
@@ -44,6 +45,19 @@ describe("parseGlossWithExamples", () => {
   });
 });
 
+describe("formatPartOfSpeech", () => {
+  it("turns Collins grammar codes into compact learner-facing labels", () => {
+    expect(formatPartOfSpeech("N-UNCOUNT 不可数名词")).toBe("n. 不可数名词");
+    expect(formatPartOfSpeech("V-T 及物动词")).toBe("v.t. 及物动词");
+  });
+
+  it("preserves unknown labels and handles empty values", () => {
+    expect(formatPartOfSpeech("special label")).toBe("special label");
+    expect(formatPartOfSpeech("  ")).toBeNull();
+    expect(formatPartOfSpeech(null)).toBeNull();
+  });
+});
+
 describe("fromDict", () => {
   it("maps a plain dict row, defaulting pitchAccent to null", () => {
     expect(fromDict(entry())).toEqual({
@@ -78,6 +92,19 @@ describe("fromDict", () => {
     expect(result.gloss).toBe("to walk");
     expect(result.examples).toEqual([
       { target: "毎日歩く", native: "I walk every day" },
+    ]);
+  });
+
+  it("round-trips Collins related forms through dictionary metadata", () => {
+    const result = fromDict(
+      entry({
+        gloss:
+          'TOKORI_DICT_META_V1{"partOfSpeech":"V-ERG","derivatives":[{"word":"integrated","relation":"derived"},{"word":"integration","relation":"derived"}]}\nintegrate',
+      }),
+    );
+    expect(result.derivatives).toEqual([
+      { word: "integrated", relation: "derived" },
+      { word: "integration", relation: "derived" },
     ]);
   });
 });

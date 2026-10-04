@@ -50,16 +50,16 @@ export type CardLayout = {
 };
 
 /** Default front/back per card kind. `vocab` preserves today's
- *  hardcoded behaviour (Word → Reading + Definition); `sentence` puts
- *  the natural translation first; `writing` is production-direction
- *  (definition prompts the user, the word is the answer). */
+ *  hardcoded behaviour (Word → Reading + Definition); `sentence` uses
+ *  the target-language sentence as the prompt and its native gloss as
+ *  the answer; `writing` is production-direction (definition prompts
+ *  the user, the word is the answer). */
 export function defaultLayoutForKind(kind: VocabKind): CardLayout {
   switch (kind) {
     case "sentence":
-      // Sentence imports store the Chinese scene/prompt in `word` and the
-      // target-language sentence in `gloss`. Put the sentence on the prompt
-      // side so Browse cards train active English recall.
-      return { front: ["definition"], back: ["translation", "word"] };
+      // Sentence cards use the canonical storage shape: `word` is the
+      // target-language sentence and `gloss` is its native translation.
+      return { front: ["word"], back: ["definition"] };
     case "writing":
       return { front: ["definition"], back: ["word", "reading"] };
     case "vocab":

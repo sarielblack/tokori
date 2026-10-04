@@ -18,8 +18,8 @@ describe("card-layout — defaultLayoutForKind", () => {
   });
   it("puts the target sentence on the front of sentence cards", () => {
     expect(defaultLayoutForKind("sentence")).toEqual({
-      front: ["definition"],
-      back: ["translation", "word"],
+      front: ["word"],
+      back: ["definition"],
     });
   });
   it("flips to production-direction for writing cards", () => {

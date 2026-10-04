@@ -914,8 +914,8 @@ export function VocabView() {
             <ul className="grid gap-2 sm:grid-cols-2">
               {visible.map((e) => {
                 const isSentence = e.kind === "sentence";
-                const primaryText = isSentence ? e.gloss ?? e.word : e.word;
-                const secondaryText = isSentence ? e.word : e.gloss;
+                const primaryText = e.word;
+                const secondaryText = e.gloss;
                 return (
                 <li
                   key={e.id}
@@ -947,7 +947,7 @@ export function VocabView() {
                           isSentence ? "text-[12px] leading-relaxed" : "text-[13px]",
                         )}
                       >
-                        {isSentence ? `场景 / 意图：${secondaryText}` : secondaryText}
+                        {isSentence ? `中文释义：${secondaryText}` : secondaryText}
                       </p>
                     )}
                     <div className="mt-2 flex items-center gap-2">
@@ -1128,11 +1128,9 @@ function FlashCard({
   onOpenInDictionary: () => void;
 }) {
   const [flipped, setFlipped] = useState(false);
-  // Sentence imports use `word` for the Chinese scene/intent and `gloss`
-  // for the English target sentence. The browse prompt should train recall
-  // from the sentence itself, not display the Chinese prompt in giant type.
   const isSentence = entry.kind === "sentence";
-  const frontText = isSentence ? entry.gloss ?? entry.word : entry.word;
+  const frontText = entry.word;
+  const scenario = isSentence ? extractSentenceScenario(entry.cardNotes) : null;
   return (
     <div className="group relative aspect-[4/3]">
       <div
@@ -1205,17 +1203,16 @@ function FlashCard({
         >
           {isSentence ? (
             <>
-              <p className="line-clamp-3 text-[12px] leading-relaxed text-muted-foreground">
-                场景 / 意图：{entry.word}
-              </p>
-              {entry.translation && (
-                <p className="line-clamp-3 text-[13px] leading-relaxed text-foreground/90">
-                  {entry.translation}
+              {scenario && (
+                <p className="line-clamp-2 text-[12px] leading-relaxed text-muted-foreground">
+                  场景 / 意图：{scenario}
                 </p>
               )}
-              <p className="line-clamp-4 flex-1 overflow-hidden text-[14px] leading-relaxed text-foreground/90">
-                {entry.gloss ?? "—"}
-              </p>
+              {entry.gloss && (
+                <p className="line-clamp-3 text-[13px] leading-relaxed text-foreground/90">
+                  {entry.gloss}
+                </p>
+              )}
             </>
           ) : (
             <>
@@ -1279,6 +1276,14 @@ function FlashCard({
       </div>
     </div>
   );
+}
+
+/** Imported sentence cards keep the original Chinese prompt in notes after
+ *  the target sentence is moved to the canonical `word` field. */
+function extractSentenceScenario(notes: string | null): string | null {
+  const line = notes?.split(/\r?\n/).find((item) => /^Scenario:\s*/i.test(item));
+  const value = line?.replace(/^Scenario:\s*/i, "").trim();
+  return value || null;
 }
 
 function BigStat({

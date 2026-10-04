@@ -39,12 +39,22 @@ function tokenizeChildren(
   children: ReactNode,
   lang: LanguageCode,
   streaming = false,
+  decoration: NonNullable<ChatMarkdownProps["decoration"]> = "status",
+  emphasizeWord?: string,
 ): ReactNode {
   return Children.map(children, (child, i) => {
     if (typeof child === "string") {
       const parts = splitOnTranslations(child);
       if (parts.length === 1 && parts[0].kind === "text") {
-        return streaming ? child : <Tokenized key={i} text={child} lang={lang} />;
+        return streaming ? child : (
+          <Tokenized
+            key={i}
+            text={child}
+            lang={lang}
+            decoration={decoration}
+            emphasizeWord={emphasizeWord}
+          />
+        );
       }
       return (
         <span key={i}>
@@ -54,7 +64,13 @@ function tokenizeChildren(
             ) : streaming ? (
               <span key={j}>{p.value}</span>
             ) : (
-              <Tokenized key={j} text={p.value} lang={lang} />
+              <Tokenized
+                key={j}
+                text={p.value}
+                lang={lang}
+                decoration={decoration}
+                emphasizeWord={emphasizeWord}
+              />
             ),
           )}
         </span>
@@ -168,6 +184,8 @@ export default function ChatMarkdownImpl({
   text,
   lang,
   streaming = false,
+  emphasizeWord,
+  decoration = "status",
 }: ChatMarkdownProps) {
   // The whole message in plain text, for the analyzer-source context:
   // markdown splits the reply into per-fragment Tokenized runs, so a
@@ -206,37 +224,46 @@ export default function ChatMarkdownImpl({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          p: ({ children }) => <p>{tokenizeChildren(children, lang, streaming)}</p>,
-          li: ({ children }) => <li>{tokenizeChildren(children, lang, streaming)}</li>,
+          p: ({ children }) => (
+            <p>{tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}</p>
+          ),
+          li: ({ children }) => (
+            <li>{tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}</li>
+          ),
           h1: ({ children }) => (
             <h1 className="mt-2 text-[18px] font-semibold tracking-tight">
-              {tokenizeChildren(children, lang, streaming)}
+              {tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}
             </h1>
           ),
           h2: ({ children }) => (
             <h2 className="mt-2 text-[16.5px] font-semibold tracking-tight">
-              {tokenizeChildren(children, lang, streaming)}
+              {tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}
             </h2>
           ),
           h3: ({ children }) => (
             <h3 className="mt-1.5 text-[15px] font-semibold tracking-tight">
-              {tokenizeChildren(children, lang, streaming)}
+              {tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}
             </h3>
           ),
-          strong: ({ children }) => (
-            <strong className="font-semibold">
-              {tokenizeChildren(children, lang, streaming)}
-            </strong>
+          strong: ({ children }) =>
+            decoration === "none" ? (
+              <span>{tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}</span>
+            ) : (
+              <strong className="font-semibold">
+                {tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}
+              </strong>
+            ),
+          em: ({ children }) => (
+            <em>{tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}</em>
           ),
-          em: ({ children }) => <em>{tokenizeChildren(children, lang, streaming)}</em>,
           td: ({ children }) => (
             <td className="border border-border/60 px-2 py-1 align-top">
-              {tokenizeChildren(children, lang, streaming)}
+              {tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}
             </td>
           ),
           th: ({ children }) => (
             <th className="border border-border/60 bg-muted/40 px-2 py-1 text-left font-medium">
-              {tokenizeChildren(children, lang, streaming)}
+              {tokenizeChildren(children, lang, streaming, decoration, emphasizeWord)}
             </th>
           ),
           ul: ({ children }) => (

@@ -2897,7 +2897,7 @@ export async function endSession(id: number): Promise<void> {
       cloudUpdateSession({
         workspaceId,
         sessionId: id,
-        patch: { endedAt: nowSec() },
+        patch: { endedAt: nowSec(), durationSecs: 0 },
       }),
     );
     return;
@@ -2906,14 +2906,16 @@ export async function endSession(id: number): Promise<void> {
     const s = fb.sessions.find((x) => x.id === id);
     if (!s) return;
     s.endedAt = nowSec();
-    s.durationSecs = s.endedAt - s.startedAt;
+    // In-app study sessions track card progress, not elapsed time. Manual
+    // activity logs still carry an explicit duration through logSession.
+    s.durationSecs = 0;
     return;
   }
   const db = await getDb();
   await db.execute(
     `UPDATE study_sessions
      SET ended_at = strftime('%s','now'),
-         duration_secs = strftime('%s','now') - started_at
+         duration_secs = 0
      WHERE id = $1`,
     [id],
   );
@@ -2953,41 +2955,32 @@ export async function resumeSession(id: number): Promise<StudySession | null> {
 /**
  * Close any study_sessions rows that were started but never finalized
  * — typically because an earlier app version (or a hard quit) didn't
- * fire endSession on unmount. Without this backfill the Skills Radar
- * shows zero hours for kinds whose recent sessions are all stuck open
- * (durationSecs=null), even though the user clearly worked. We cap
- * the inferred duration at `maxDurationSecs` so a session that was
- * started days ago doesn't suddenly claim 72 hours of study; 60
- * minutes is the median realistic upper bound for an unsupervised
- * close. Idempotent — re-running finds nothing on a clean store.
+ * fire endSession on unmount. Sessions are progress containers now, so
+ * stale rows are closed without inferring elapsed study time from the
+ * wall clock. Idempotent — re-running finds nothing on a clean store.
  */
 export async function finalizeStaleSessions(
   workspaceId: number,
-  maxDurationSecs = 60 * 60,
+  _maxDurationSecs = 60 * 60,
 ): Promise<void> {
   if (HOSTED) return; // server-side cleanup TBD; not blocking the desktop fix
-  const now = nowSec();
   if (!isTauri()) {
     for (const s of fb.sessions) {
       if (s.workspaceId !== workspaceId) continue;
       if (s.endedAt != null && s.durationSecs != null) continue;
-      const elapsed = now - s.startedAt;
-      if (elapsed <= 0) continue;
-      const dur = Math.min(elapsed, maxDurationSecs);
-      s.endedAt = s.startedAt + dur;
-      s.durationSecs = dur;
+      s.endedAt = s.endedAt ?? nowSec();
+      s.durationSecs = s.durationSecs ?? 0;
     }
     return;
   }
   const db = await getDb();
   await db.execute(
     `UPDATE study_sessions
-     SET ended_at      = started_at + MIN(strftime('%s','now') - started_at, $1),
-         duration_secs = MIN(strftime('%s','now') - started_at, $1)
-     WHERE workspace_id = $2
-       AND (ended_at IS NULL OR duration_secs IS NULL)
-       AND strftime('%s','now') - started_at > 0`,
-    [maxDurationSecs, workspaceId],
+     SET ended_at      = COALESCE(ended_at, strftime('%s','now')),
+         duration_secs = COALESCE(duration_secs, 0)
+     WHERE workspace_id = $1
+       AND (ended_at IS NULL OR duration_secs IS NULL)`,
+    [workspaceId],
   );
 }
 

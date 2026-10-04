@@ -3,6 +3,14 @@ import type { DictEntry } from "@/lib/db";
 
 export type ExampleSentence = { target: string; native: string };
 
+/** A related form preserved from a learner dictionary entry. Collins uses
+ * these rows for forms such as `integrated` and `integration`; they are
+ * related-word hints, not an asserted etymology. */
+export type DictionaryDerivative = {
+  word: string;
+  relation?: "derived" | "related";
+};
+
 export type LookupResult = {
   reading: string | null;
   gloss: string;
@@ -13,6 +21,12 @@ export type LookupResult = {
   /** Optional accent-specific IPA carried by an imported dictionary. */
   readingUs?: string | null;
   readingUk?: string | null;
+  /** Related / derived forms preserved from the source dictionary. */
+  derivatives?: DictionaryDerivative[];
+  /** Optional trusted morphology fields from a dictionary importer. */
+  root?: string | null;
+  prefixes?: string[];
+  suffixes?: string[];
   /** Traditional-Chinese headword, when the dictionary carries one.
    *  CC-CEDICT stores both forms; this is the entry's `altWord`. The
    *  click-to-define popover renders this as the headword when the
@@ -36,6 +50,41 @@ export type LookupResult = {
   pitchAccent?: number | null;
 };
 
+/** Convert compact dictionary grammar codes into learner-facing labels.
+ *
+ * Imported Collins rows keep their original `partOfSpeech` value in the
+ * database. This is only a display formatter: e.g. `N-UNCOUNT 不可数名词`
+ * becomes `n. 不可数名词`, while the stored dictionary data remains intact.
+ */
+export function formatPartOfSpeech(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  const match = raw.match(/^([A-Z][A-Z-]*)(?:\s+(.*))?$/i);
+  if (!match) return raw;
+  const code = match[1].toUpperCase();
+  const remainder = match[2]?.trim() ?? "";
+  const compact: Record<string, string> = {
+    N: "n.",
+    "N-COUNT": "n.",
+    "N-UNCOUNT": "n.",
+    "N-PLURAL": "n.",
+    V: "v.",
+    "V-T": "v.t.",
+    "V-I": "v.i.",
+    ADJ: "adj.",
+    ADV: "adv.",
+    PREP: "prep.",
+    CONJ: "conj.",
+    PRON: "pron.",
+    DET: "det.",
+    AUX: "aux.",
+    MODAL: "modal v.",
+  };
+  const label = compact[code];
+  if (!label) return raw;
+  return remainder ? `${label} ${remainder}` : label;
+}
+
 export function fromMini(word: string): LookupResult | null {
   const e = CEDICT_MINI[word];
   return e ? { reading: e.pinyin, gloss: e.gloss } : null;
@@ -54,16 +103,62 @@ export type DictionaryMeta = {
   definitionEn?: string | null;
   readingUs?: string | null;
   readingUk?: string | null;
+  derivatives?: DictionaryDerivative[];
+  root?: string | null;
+  prefixes?: string[];
+  suffixes?: string[];
 };
+
+function cleanStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const list = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return list.length > 0 ? Array.from(new Set(list)) : undefined;
+}
+
+function cleanDerivatives(value: unknown): DictionaryDerivative[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const list: DictionaryDerivative[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const word = typeof record.word === "string" ? record.word.trim() : "";
+    if (!word) continue;
+    const key = word.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push({
+      word,
+      relation: record.relation === "related" ? "related" : "derived",
+    });
+  }
+  return list.length > 0 ? list.slice(0, 24) : undefined;
+}
+
+function cleanDictionaryMeta(meta?: DictionaryMeta): DictionaryMeta {
+  const out: DictionaryMeta = {};
+  for (const field of ["partOfSpeech", "definitionEn", "readingUs", "readingUk", "root"] as const) {
+    const value = meta?.[field];
+    if (typeof value === "string" && value.trim()) out[field] = value.trim();
+  }
+  const prefixes = cleanStringList(meta?.prefixes);
+  const suffixes = cleanStringList(meta?.suffixes);
+  const derivatives = cleanDerivatives(meta?.derivatives);
+  if (prefixes) out.prefixes = prefixes;
+  if (suffixes) out.suffixes = suffixes;
+  if (derivatives) out.derivatives = derivatives;
+  return out;
+}
 
 export function encodeDictionaryGloss(
   gloss: string,
   meta?: DictionaryMeta,
   examples?: ExampleSentence[],
 ): string {
-  const cleanMeta = Object.fromEntries(
-    Object.entries(meta ?? {}).filter(([, value]) => typeof value === "string" && value.trim()),
-  );
+  const cleanMeta = cleanDictionaryMeta(meta);
   const base = gloss.trim();
   const exampleBlock = (examples ?? [])
     .filter((e) => e?.target?.trim())
@@ -103,6 +198,10 @@ export function parseGlossWithExamples(gloss: string): {
   definitionEn?: string | null;
   readingUs?: string | null;
   readingUk?: string | null;
+  derivatives?: DictionaryDerivative[];
+  root?: string | null;
+  prefixes?: string[];
+  suffixes?: string[];
 } {
   const unpacked = unpackDictionaryGloss(gloss);
   const idx = unpacked.body.indexOf(EXAMPLES_DELIMITER);
@@ -132,7 +231,18 @@ export function parseGlossWithExamples(gloss: string): {
 }
 
 export function fromDict(e: DictEntry): LookupResult {
-  const { gloss, examples, partOfSpeech, definitionEn, readingUs, readingUk } =
+  const {
+    gloss,
+    examples,
+    partOfSpeech,
+    definitionEn,
+    readingUs,
+    readingUk,
+    derivatives,
+    root,
+    prefixes,
+    suffixes,
+  } =
     parseGlossWithExamples(e.gloss);
   return {
     reading: e.reading,
@@ -141,6 +251,10 @@ export function fromDict(e: DictEntry): LookupResult {
     definitionEn,
     readingUs,
     readingUk,
+    derivatives,
+    root,
+    prefixes,
+    suffixes,
     traditional: e.altWord,
     examples: examples.length > 0 ? examples : undefined,
     inflectionOf: e.inflectionOf,

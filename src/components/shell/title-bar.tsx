@@ -138,15 +138,6 @@ function TitleBarChrome({
             >
               {APP_NAME}
             </span>
-            {/* Build-time constant (vite define) — synchronous, so the
-                bar never reflows the way an async getVersion() would.
-                Same source the About screen falls back to. */}
-            <span
-              data-tauri-drag-region
-              className="text-[10px] text-muted-foreground/60"
-            >
-              v{__APP_VERSION__}
-            </span>
           </div>
         )}
 

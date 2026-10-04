@@ -17,6 +17,10 @@ import { cn } from "@/lib/utils";
 export type ChatMarkdownProps = {
   text: string;
   lang: LanguageCode;
+  /** Optional headword to emphasize while keeping the rest of the prose plain. */
+  emphasizeWord?: string;
+  /** How inline dictionary triggers are decorated. */
+  decoration?: "status" | "subtle" | "none";
   /** Skip the Tokenized click-to-define pipeline (render raw text) while a
    *  reply streams, to avoid re-tokenising — and, in HOSTED, re-fetching dict
    *  lookups — on every token batch. Used by the study AI drawer's streaming

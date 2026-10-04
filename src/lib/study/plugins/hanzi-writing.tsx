@@ -589,8 +589,7 @@ function StudyView({ ctx }: StudyViewProps) {
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <h2 className="font-serif text-3xl tracking-tight">Session complete.</h2>
         <p className="text-[13.5px] text-muted-foreground">
-          {done} card{done === 1 ? "" : "s"} ·{" "}
-          {Math.max(1, Math.floor(getActiveSecs() / 60))} min
+          {done} card{done === 1 ? "" : "s"}
         </p>
         <Button
           variant="outline"

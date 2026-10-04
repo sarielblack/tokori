@@ -172,14 +172,12 @@ export function SessionTopBarControls({
 }
 
 /** Fullscreen overlay that takes over the session. Shows the
- *  user's current progress and a Resume / End choice. Active time
- *  tracking should pause while this is on screen (the `elapsedSecs`
- *  is what the parent has accumulated up to the moment of pause). */
+ *  user's current progress and a Resume / End choice. */
 export function PauseOverlay({
   progress,
   done,
   total,
-  elapsedSecs,
+  elapsedSecs: _elapsedSecs,
   onResume,
   onEnd,
 }: {
@@ -191,7 +189,6 @@ export function PauseOverlay({
   onResume: () => void;
   onEnd: () => void;
 }) {
-  const minutes = Math.max(1, Math.round(elapsedSecs / 60));
   // The overlay covers the custom title bar, so make the backdrop a
   // window drag region — otherwise the window can't be moved while a
   // session is paused. `data-tauri-drag-region` only fires on this exact
@@ -207,7 +204,7 @@ export function PauseOverlay({
           Paused
         </p>
         <p className="mt-1 text-[12px] text-muted-foreground">
-          {done} / {total} cards · {minutes}m
+          {done} / {total} cards
         </p>
         <div className="mt-4">
           <Progress value={progress} />

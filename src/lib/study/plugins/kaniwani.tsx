@@ -710,8 +710,7 @@ function StudyView({ ctx }: StudyViewProps) {
         <CheckCircle2 className="size-7 text-emerald-500" />
         <h2 className="font-serif text-3xl tracking-tight">All cards typed.</h2>
         <p className="text-[13.5px] text-muted-foreground">
-          {done} card{done === 1 ? "" : "s"} graded ·{" "}
-          {Math.max(1, Math.floor(getActiveSecs() / 60))} min
+          {done} card{done === 1 ? "" : "s"} graded
         </p>
         <Button variant="outline" onClick={() => ctx.onSessionEnd(buildSessionStats())}>
           <RotateCcw className="size-4" />

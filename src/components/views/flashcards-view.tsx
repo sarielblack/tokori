@@ -558,13 +558,9 @@ function StudyMode({
   // finalised by the unmount-end effect below, so progress isn't
   // lost; the user just gets a clean slate on re-entry.
 
-  // End the active session when the user navigates away mid-study.
-  // `endIfActive(id)` is a no-op when the session was replaced or
-  // already ended via the plugin's natural completion path, so the
-  // common case (user finished, clicked End) doesn't double-end.
-  // Without this, sessions hang open with `duration_secs = NULL`
-  // until the 5-min idle timer or `finalizeStaleSessions` catches
-  // them — both worse UX than "you walked away, the timer stops".
+  // End the active progress container when the user navigates away
+  // mid-study. `endIfActive(id)` is a no-op when the session was
+  // replaced or already ended via the plugin's natural completion path.
   useEffect(() => {
     return () => {
       const id = createdSessionIdRef.current;
@@ -656,8 +652,8 @@ function StudyMode({
         if (created) createdSessionIdRef.current = s.id;
         return s.id;
       },
-      // Plugins drive these from their own pause UI so the session clock
-      // (and the idle auto-end) freezes while the user is paused.
+      // Compatibility fields for study plugins. Session progress is
+      // persisted, but elapsed time is intentionally not tracked.
       sessionPaused: session.paused,
       sessionActiveSecs: session.activeSecs,
       pauseSession: session.pause,
@@ -675,16 +671,25 @@ function StudyMode({
         localStorage.removeItem(ACTIVE_PLUGIN_KEY);
       },
       onSessionEnd: (stats) => {
+        // Opening the picker and backing out can reach a plugin's leave path
+        // without grading a card. That is not a meaningful study session:
+        // close the empty session and return to the picker instead of showing a
+        // confusing "Session done — 0 cards" summary.
+        if (stats.cardsReviewed <= 0) {
+          setSummary(null);
+          setPicked(null);
+          setDrillMode(customScope?.drill ?? restudyToday);
+          localStorage.removeItem(ACTIVE_PLUGIN_KEY);
+          void session.end().catch((err) => {
+            console.warn("[study] empty session.end failed", err);
+          });
+          return;
+        }
         // Show the summary screen immediately…
         setSummary(stats);
-        // …and persist the session row to the DB. Without this call,
-        // the row created by `ensureStarted("review")` keeps
-        // `duration_secs = NULL`, so the dashboard's "today's
-        // immersion so far" and the consistency heatmap (both fed by
-        // listSessions → durationSecs) read 0 even after a real
-        // session. session.end() runs `endSession(session.id)` which
-        // writes `ended_at = now()` and `duration_secs = now -
-        // started_at`, matching what the user just saw on screen.
+        // …and close the progress row. In-app sessions deliberately
+        // write no elapsed duration; card/review counts are the useful
+        // measure for this workflow.
         void session.end().catch((err) => {
           console.warn("[study] session.end failed", err);
         });
@@ -809,23 +814,13 @@ function StudyMode({
     );
   }
 
-  // Active session — fullscreen mount of the picked plugin. The plugin
-  // owns its own small top bar; keeping the host chrome out of this area
-  // is what makes the background and card feel like an immersion mode.
+  // Active/prestart session — fullscreen mount of the picked plugin. The
+  // plugin owns its own top bar or prestart back button; keeping a second
+  // host-level "Change mode" button here created two stacked controls in the
+  // same top-left corner and made resume/start feel ambiguous.
   const Plugin = picked.StudyView;
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="group/change-mode absolute left-0 top-0 z-20 h-14 w-44">
-        <button
-          type="button"
-          onClick={() => ctx.onChangeMode?.()}
-          className="pointer-events-none absolute left-3 top-2 inline-flex items-center gap-1 rounded-full border border-border/50 bg-background/25 px-2 py-1 text-[11px] text-muted-foreground opacity-0 backdrop-blur-md transition-opacity hover:bg-background/60 hover:text-foreground group-hover/change-mode:pointer-events-auto group-hover/change-mode:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-          title="Choose a different study mode"
-        >
-          <ArrowLeft className="size-3.5" />
-          Change mode
-        </button>
-      </div>
       <Plugin ctx={ctx} />
     </div>
   );
@@ -1050,6 +1045,17 @@ function SessionSummary({
     for (const c of dedupedCards) groups[c.grade].push(c);
     return groups;
   }, [dedupedCards]);
+  const simpleRecall = plugin?.meta.id === "vocab-recall";
+  const unfamiliarCount = stats.grades?.again ?? 0;
+  const familiarCount = simpleRecall
+    ? (stats.grades?.hard ?? 0) + (stats.grades?.good ?? 0) + (stats.grades?.easy ?? 0)
+    : 0;
+  const unfamiliarCards = simpleRecall
+    ? dedupedCards.filter((card) => card.grade === "again")
+    : [];
+  const familiarCards = simpleRecall
+    ? dedupedCards.filter((card) => card.grade !== "again")
+    : [];
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto px-6 py-10">
@@ -1070,14 +1076,21 @@ function SessionSummary({
           className="mt-1.5 text-[13.5px] text-muted-foreground animate-in fade-in duration-500"
           style={{ animationDelay: "450ms", animationFillMode: "both" }}
         >
-          {stats.cardsReviewed} card{stats.cardsReviewed === 1 ? "" : "s"} ·{" "}
-          {Math.max(1, Math.round(stats.durationSecs / 60))} min
+          {stats.cardsReviewed} card{stats.cardsReviewed === 1 ? "" : "s"}
           {plugin && ` · ${plugin.meta.name}`}
           {scopeName != null && ` · Custom: ${scopeName}`}
         </p>
 
         {/* Grade pills */}
-        {stats.grades && (
+        {stats.grades && simpleRecall ? (
+          <div
+            className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11.5px] animate-in fade-in slide-in-from-bottom-2 duration-500"
+            style={{ animationDelay: "550ms", animationFillMode: "both" }}
+          >
+            <SimpleGradePill label="不熟" count={unfamiliarCount} />
+            <SimpleGradePill label="熟" count={familiarCount} />
+          </div>
+        ) : stats.grades ? (
           <div
             className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[11.5px] animate-in fade-in slide-in-from-bottom-2 duration-500"
             style={{ animationDelay: "550ms", animationFillMode: "both" }}
@@ -1087,7 +1100,7 @@ function SessionSummary({
             <GradePill grade="good" count={stats.grades.good} />
             <GradePill grade="easy" count={stats.grades.easy} />
           </div>
-        )}
+        ) : null}
 
         {/* Word list */}
         {dedupedCards.length > 0 && (
@@ -1099,13 +1112,22 @@ function SessionSummary({
               What you studied
             </p>
             <div className="grid gap-3 text-left">
-              {(["again", "hard", "good", "easy"] as Grade[]).map((g) => {
-                const items = groupedCards[g];
-                if (items.length === 0) return null;
-                return (
-                  <ReviewedGroup key={g} grade={g} items={items} />
-                );
-              })}
+              {simpleRecall ? (
+                <>
+                  {unfamiliarCards.length > 0 && (
+                    <SimpleReviewedGroup label="不熟" items={unfamiliarCards} />
+                  )}
+                  {familiarCards.length > 0 && (
+                    <SimpleReviewedGroup label="熟" items={familiarCards} />
+                  )}
+                </>
+              ) : (
+                (["again", "hard", "good", "easy"] as Grade[]).map((g) => {
+                  const items = groupedCards[g];
+                  if (items.length === 0) return null;
+                  return <ReviewedGroup key={g} grade={g} items={items} />;
+                })
+              )}
             </div>
           </div>
         )}
@@ -1215,6 +1237,46 @@ function GradePill({ grade, count }: { grade: Grade; count: number }) {
       <span className="text-[11px]">{meta.icon}</span>
       {meta.label} {count}
     </span>
+  );
+}
+
+function SimpleGradePill({ label, count }: { label: string; count: number }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/35 px-2.5 py-0.5 font-medium text-foreground/75">
+      {label} {count}
+    </span>
+  );
+}
+
+function SimpleReviewedGroup({
+  label,
+  items,
+}: {
+  label: string;
+  items: ReviewedCardSummary[];
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card px-3.5 py-3">
+      <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label} · {items.length}
+      </p>
+      <ul className="flex flex-wrap gap-1.5">
+        {items.map((c, i) => (
+          <li
+            key={`${c.word}-${i}`}
+            className="rounded-md border border-border bg-background px-2 py-1 text-[12.5px]"
+            title={c.gloss ?? undefined}
+          >
+            <span className="font-serif text-[14px]">{c.word}</span>
+            {c.reading && (
+              <span className="ml-1.5 text-[11px]">
+                <Pinyin raw={c.reading} />
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

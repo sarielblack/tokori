@@ -8,15 +8,14 @@ import {
   Clapperboard,
   FolderOpen,
   ChevronDown,
+  ChevronRight,
   History,
   Home,
   Layers,
   Library,
   Loader2,
   MessageSquare,
-  MoreHorizontal,
   NotebookPen,
-  Pencil,
   Plus,
   Search,
   Settings,
@@ -48,19 +47,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 import { Pinyin } from "@/components/pinyin";
 import { AddCustomWordDialog } from "@/components/add-custom-word-dialog";
 import { cn } from "@/lib/utils";
 import { HOSTED } from "@/lib/build-flags";
-import { useBackgroundChat } from "@/lib/background-chat-context";
-import { useChatList } from "@/lib/chat-list-context";
 import { useSearch } from "@/lib/search-context";
 import { useWorkspace } from "@/lib/workspace-context";
 import { useProviderConfigs } from "@/lib/provider-context";
@@ -84,12 +75,12 @@ import {
   clearVocabRecallResumeIntent,
   clearVocabRecallSnapshot,
   getVocabRecallSnapshotSessionId,
+  hasVocabRecallSnapshot,
   setVocabRecallResumeIntent,
 } from "@/lib/study/vocab-recall-session";
 import type { TabId } from "./shell";
 import { SidebarGlyph } from "./sidebar-glyph";
 import { TierBadge } from "./tier-badge";
-import { SidebarSessionControl } from "./sidebar-session-control";
 
 type NavItem = {
   id: TabId;
@@ -111,10 +102,10 @@ const ALL_NAV_GROUPS: { label: string | null; items: NavItem[] }[] = [
     label: null,
     items: [
       { id: "dashboard", label: "Home", icon: Home },
+      { id: "flashcards", label: "Flashcards", icon: Layers },
       { id: "chat", label: "Conversation", icon: MessageSquare },
       { id: "reader", label: "Reader", icon: BookOpenText },
       { id: "immersion", label: "Immersion", icon: Clapperboard },
-      { id: "flashcards", label: "Flashcards", icon: Layers },
     ],
   },
   {
@@ -190,10 +181,13 @@ export function Sidebar({
 }) {
   const { workspaces, active, setActive, deleteWorkspace } = useWorkspace();
   const { active: provider } = useProviderConfigs();
-  const { active: session } = useSession();
   const { profile } = useProfile();
   const search = useSearch();
   const setCollapsed = onCollapsedChange;
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({
+    Library: true,
+    Progress: true,
+  });
 
   // Force-expand the sidebar when entering search mode — results need width.
   useEffect(() => {
@@ -280,32 +274,43 @@ export function Sidebar({
               {NAV_GROUPS.map((group, gi) => (
                 <div key={gi}>
                   {!collapsed && group.label && (
-                    <div className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-                       {navText(profile.uiLanguage, group.label)}
-                    </div>
+                    <button
+                      type="button"
+                      aria-expanded={!collapsedGroups[group.label]}
+                      onClick={() =>
+                        setCollapsedGroups((current) => ({
+                          ...current,
+                          [group.label!]: !current[group.label!],
+                        }))
+                      }
+                      className="flex w-full items-center gap-1 rounded px-2.5 pb-1 pt-1.5 text-left text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {collapsedGroups[group.label] ? (
+                        <ChevronRight className="size-3 shrink-0" />
+                      ) : (
+                        <ChevronDown className="size-3 shrink-0" />
+                      )}
+                      {navText(profile.uiLanguage, group.label)}
+                    </button>
                   )}
                   {collapsed && gi > 0 && <Separator className="my-1.5" />}
-                  {group.items.map((item) => (
-                    <NavButton
-                      key={item.id}
-                      collapsed={collapsed}
-                      active={activeTab === item.id}
-                      onClick={() => onTabChange(item.id)}
-                      icon={<item.icon className="size-4" />}
-                       label={navText(profile.uiLanguage, item.label)}
-                    />
-                  ))}
+                  {(!group.label || !collapsedGroups[group.label]) &&
+                    group.items.map((item) => (
+                      <NavButton
+                        key={item.id}
+                        collapsed={collapsed}
+                        active={activeTab === item.id}
+                        onClick={() => onTabChange(item.id)}
+                        icon={<item.icon className="size-4" />}
+                        label={navText(profile.uiLanguage, item.label)}
+                      />
+                    ))}
                 </div>
               ))}
             </nav>
-            {!collapsed && <RecentsSection onTabChange={onTabChange} />}
+            {!collapsed && <StudySessionsSection onTabChange={onTabChange} />}
           </div>
         )}
-
-        {/* Session control — same SessionContext the rest of the app
-            uses, so anything logged here flows into the dashboard,
-            journey, goals, and habits like every other session. */}
-        <SidebarSessionControl collapsed={collapsed} />
 
         <Separator />
 
@@ -341,7 +346,6 @@ export function Sidebar({
                 />
                 <span className="truncate">
                   {provider ? provider.label : "no provider"}
-                  {session && " · session"}
                 </span>
               </div>
             </div>
@@ -773,39 +777,17 @@ function ResultRow({
   );
 }
 
-function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) {
-  const { chats, activeChatId, setActiveChatId, rename, remove } = useChatList();
+function StudySessionsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) {
   const { active: workspace } = useWorkspace();
   const { active: studySession } = useSession();
   const { profile } = useProfile();
   const tx = (english: string, chinese: string) =>
     uiText(profile.uiLanguage, english, chinese);
   const [recentStudySessions, setRecentStudySessions] = useState<StudySession[]>([]);
-  // Pull in the unread set + active streams so the row can show a green
-  // dot when a reply landed while the user was elsewhere, and a soft
-  // pulse when generation is currently mid-flight.
-  const bg = useBackgroundChat();
-  const [showAll, setShowAll] = useState(false);
-  // Which chat the destructive AlertDialog is currently asking about.
-  // Lifted to state so we can render the shadcn dialog in-tree instead
-  // of the OS-level `window.confirm`, which doesn't match the app's
-  // visual language and steals focus to the browser chrome.
-  const [pendingDelete, setPendingDelete] = useState<{
-    id: number;
-    title: string;
-  } | null>(null);
-  // Separate pending-state for the bulk "Clear all" action so the two
-  // dialogs never collide. `clearing` is the active-spinner flag while
-  // the loop runs, so the user sees something is happening on workspaces
-  // with hundreds of chats where deletion isn't instant.
-  const [confirmClearAll, setConfirmClearAll] = useState(false);
-  const [clearing, setClearing] = useState(false);
 
-  // Study sessions are separate from conversations in the data model. The
-  // old Recents section only read ChatList, so a Flashcards session was
-  // persisted correctly but had nowhere to appear in the sidebar. Refresh
-  // when the workspace/session lifecycle changes so ending a review makes it
-  // visible without restarting the app.
+  // Keep one actionable resume entry, rather than exposing chat history and
+  // old study rows in a learning-first sidebar. The database still retains
+  // the full session history for Statistics.
   useEffect(() => {
     let cancelled = false;
     if (!workspace) {
@@ -821,9 +803,27 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
       if (!studySession) await finalizeStaleSessions(workspace.id);
       const sessions = await listSessions(workspace.id);
       if (cancelled) return;
-      setRecentStudySessions(
-        sessions.filter((item) => item.endedAt != null).slice(0, 4),
+      // The database keeps the full history for Statistics, but the sidebar
+      // should expose only one actionable item: the latest unfinished vocab
+      // recall whose transient queue still exists in localStorage.
+      const snapshotSessionId = getVocabRecallSnapshotSessionId(workspace.id);
+      const completedReviewRows = sessions.filter(
+        (item) =>
+          item.kind === "review" &&
+          item.endedAt != null &&
+          (item.wordsSeen > 0 || item.wordsSaved > 0),
       );
+      const resumable = snapshotSessionId != null
+        ? sessions.find(
+            (item) =>
+              item.kind === "review" &&
+              item.endedAt != null &&
+              item.id === snapshotSessionId,
+          )
+          : hasVocabRecallSnapshot(workspace.id)
+          ? completedReviewRows[0]
+          : undefined;
+      setRecentStudySessions(resumable ? [resumable] : []);
     };
     void load().catch(() => {
       if (!cancelled) setRecentStudySessions([]);
@@ -832,58 +832,6 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
       cancelled = true;
     };
   }, [workspace?.id, studySession?.id]);
-
-  async function clearAllChats() {
-    // Snapshot the list because `remove` mutates the underlying chats
-    // state — iterating the live array would skip every other entry.
-    const ids = chats.map((c) => c.id);
-    setClearing(true);
-    try {
-      // Sequential rather than Promise.all: each delete cascades through
-      // messages + FTS rows, and the SQLx pool collapses if a workspace
-      // with hundreds of chats fires them all at once.
-      for (const id of ids) {
-        await remove(id);
-      }
-      setActiveChatId(null);
-    } finally {
-      setClearing(false);
-    }
-  }
-
-  if (chats.length === 0 && recentStudySessions.length === 0) {
-    return (
-      <div className="px-3 pb-3 pt-3">
-        <div className="px-1 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-          {tx("Recents", "最近使用")}
-        </div>
-        <p className="px-1 py-1.5 text-[11.5px] text-muted-foreground">
-            {tx("No conversations or study sessions yet.", "还没有对话或学习会话。")}
-        </p>
-      </div>
-    );
-  }
-
-  const limit = 7;
-  const visible = showAll ? chats : chats.slice(0, limit);
-  const hasMore = chats.length > limit;
-
-  function pickChat(id: number) {
-    setActiveChatId(id);
-    onTabChange("chat");
-  }
-
-  async function onRename(id: number, currentTitle: string) {
-    const next = window.prompt("Rename chat", currentTitle || "");
-    if (next == null) return;
-    const trimmed = next.trim();
-    if (!trimmed) return;
-    await rename(id, trimmed);
-  }
-
-  function onDelete(id: number, title: string) {
-    setPendingDelete({ id, title });
-  }
 
   function resumeStudySession(item: StudySession) {
     if (item.kind !== "review" || !workspace) {
@@ -894,294 +842,71 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
     onTabChange("flashcards");
   }
 
-  return (
-    <>
-    <div className="mt-1 flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between px-2.5 pb-1 pt-3">
-        <span className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-          {tx("Recents", "最近使用")}
-        </span>
-        {/* Bulk clear — only renders when there's something to clear so
-            the section stays visually quiet on first launch. Tooltip
-            spells out destructiveness; the AlertDialog below is the
-            actual gate. */}
-        {chats.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => setConfirmClearAll(true)}
-                className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-destructive"
-                 aria-label={tx("Clear all chats", "清空所有对话")}
-              >
-                <Trash2 className="size-3" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" sideOffset={6}>
-               {tx("Clear all recent chats", "清空最近对话")}
-            </TooltipContent>
-          </Tooltip>
-        )}
-      </div>
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {chats.length > 0 ? (
-          <ul className="flex flex-col">
-            {visible.map((c) => {
-            const isUnread = bg.unread.has(c.id);
-            const isStreaming = bg.activeStreamIds.has(c.id);
-            const isTitlePending = bg.titlePending.has(c.id);
-            return (
-            // Keyed entry animation: a freshly-created chat glides in
-            // instead of popping. Reorders (existing chat bumped to the
-            // top) reuse the keyed node, so they don't re-animate.
-            <li
-              key={c.id}
-              className="group/row relative animate-in fade-in slide-in-from-left-1 duration-300"
-            >
-              <button
-                onClick={() => pickChat(c.id)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-md py-1.5 pl-9 pr-8 text-left text-[13.5px] transition-colors duration-200",
-                  activeChatId === c.id
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                  isUnread && activeChatId !== c.id && "text-foreground",
-                )}
-                title={
-                  isTitlePending
-                    ? `${c.title || "Untitled"} — naming this chat…`
-                    : isStreaming
-                      ? `${c.title || "Untitled"} — generating reply…`
-                      : isUnread
-                        ? `${c.title || "Untitled"} — new reply`
-                        : c.title || "Untitled"
-                }
-              >
-                <span
-                  className={cn(
-                    "truncate transition-[filter,opacity] duration-500 ease-out",
-                    isUnread && "font-medium",
-                    // Skeleton-blur while the AI titler is still
-                    // running. Once `titlePending` clears, the blur
-                    // eases away and the proper title resolves in place.
-                    isTitlePending &&
-                      "blur-[2.5px] opacity-60 animate-pulse select-none",
-                  )}
-                >
-                  {c.title || "Untitled"}
-                </span>
-                {/* Status dot: green = unseen reply waiting; pulsing
-                    sky = generation currently in flight (regardless of
-                    whether the user is on this chat). */}
-                {(isUnread || isStreaming) && (
-                  <span
-                    className={cn(
-                      "ml-auto size-1.5 shrink-0 rounded-full",
-                      isStreaming
-                        ? "bg-sky-500 animate-pulse"
-                        : "bg-emerald-500",
-                    )}
-                    aria-hidden
-                  />
-                )}
-              </button>
-              <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover/row:opacity-100">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                      aria-label="Chat options"
-                    >
-                      <MoreHorizontal className="size-3.5" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-36">
-                    <DropdownMenuItem onSelect={() => void onRename(c.id, c.title)}>
-                      <Pencil className="size-3.5" />
-                      Rename
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={() => void onDelete(c.id, c.title)}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      <Trash2 className="size-3.5" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </li>
-            );
-            })}
-          </ul>
-        ) : (
-          <p className="px-1 py-1.5 text-[11.5px] text-muted-foreground">
-            {tx("No conversations yet.", "还没有对话。")}
-          </p>
-        )}
-        {hasMore && (
-          <button
-            type="button"
-            onClick={() => setShowAll((s) => !s)}
-            className="mt-1.5 flex w-full items-center gap-1.5 rounded-md py-1 pl-9 pr-2 text-[12px] text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-          >
-            <ChevronDown
-              className={cn(
-                "size-3 transition-transform",
-                showAll && "rotate-180",
-              )}
-            />
-            {showAll
-              ? tx("Show less", "收起")
-              : tx(`Load more (${chats.length - limit})`, `加载更多（${chats.length - limit}）`)}
-          </button>
-        )}
-        {recentStudySessions.length > 0 && (
-          <div className="mt-3 border-t border-border/60 pt-2">
-            <div className="px-1 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-              {tx("Study sessions", "学习会话")}
-            </div>
-            <ul className="flex flex-col">
-              {recentStudySessions.map((item) => (
-                <li
-                  key={`study-session-${item.id}`}
-                  className="group/study-row relative"
-                >
-                  <button
-                    type="button"
-                    onClick={() => resumeStudySession(item)}
-                    className="flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-8 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-                    title={
-                      item.kind === "review"
-                        ? tx("Resume this flashcards session", "继续这个词卡会话")
-                        : tx("Open Statistics", "打开统计")
-                    }
-                  >
-                    <History className="size-3.5 shrink-0" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {tx(
-                        studySessionLabel(item.kind),
-                        item.kind === "review" ? "词卡复习" : "沉浸式会话",
-                      )}
-                    </span>
-                    <span className="shrink-0 text-[10.5px] tabular-nums text-muted-foreground/80">
-                      {formatRecentSession(item)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async (event) => {
-                      event.stopPropagation();
-                      await deleteSession(item.id);
-                      if (
-                        workspace &&
-                        item.kind === "review" &&
-                        getVocabRecallSnapshotSessionId(workspace.id) === item.id
-                      ) {
-                        clearVocabRecallSnapshot(workspace.id);
-                        clearVocabRecallResumeIntent(workspace.id);
-                      }
-                      setRecentStudySessions((items) =>
-                        items.filter((session) => session.id !== item.id),
-                      );
-                    }}
-                    className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover/study-row:opacity-100"
-                    aria-label={tx(
-                      `Delete ${studySessionLabel(item.kind)}`,
-                      `删除${item.kind === "review" ? "词卡复习" : "沉浸式会话"}`,
-                    )}
-                    title={tx("Delete study session", "删除学习会话")}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-    </div>
-    {/* Confirm-delete dialog — destructive action, so we use the
-        in-app AlertDialog rather than `window.confirm`. The OS prompt
-        is jarring against the app's visual language and pulls focus
-        out of the webview. */}
-    <AlertDialog
-      open={pendingDelete != null}
-      onOpenChange={(v) => {
-        if (!v) setPendingDelete(null);
-      }}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Delete &ldquo;{pendingDelete?.title || "this chat"}&rdquo;?
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            This permanently removes the conversation and all its messages.
-            This can&apos;t be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            onClick={async () => {
-              const target = pendingDelete;
-              setPendingDelete(null);
-              if (target) await remove(target.id);
-            }}
-          >
-            Delete
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+  if (recentStudySessions.length === 0) return null;
 
-    {/* Bulk clear-all dialog. Phrased to make the count visible up
-        front — deleting 200 chats by accident is a worse feeling
-        than deleting 5, and the wording should reflect that. */}
-    <AlertDialog
-      open={confirmClearAll}
-      onOpenChange={(v) => {
-        if (!v && !clearing) setConfirmClearAll(false);
-      }}
-    >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            Clear {chats.length} recent chat{chats.length === 1 ? "" : "s"}?
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            Every conversation in this workspace will be permanently
-            deleted, along with their messages. Your vocabulary,
-            collections, and notes are not affected. This can&apos;t be
-            undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={clearing}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={clearing}
-            variant="destructive"
-            onClick={async () => {
-              await clearAllChats();
-              setConfirmClearAll(false);
-            }}
-          >
-            {clearing ? (
-              <>
-                <Loader2 className="size-3.5 animate-spin" />
-                Clearing…
-              </>
-            ) : (
-              "Clear all"
-            )}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-    </>
+  return (
+    <div className="mt-3 border-t border-border/60 px-2 pt-2">
+      <div className="px-1 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+        {tx("Continue studying", "继续学习")}
+      </div>
+      <ul className="flex flex-col">
+        {recentStudySessions.map((item) => (
+          <li key={`study-session-${item.id}`} className="group/study-row relative">
+            <button
+              type="button"
+              onClick={() => resumeStudySession(item)}
+              className="flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-8 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+              title={
+                item.kind === "review"
+                  ? tx("Resume this flashcards session", "继续这个词卡会话")
+                  : tx("Open Statistics", "打开统计")
+              }
+            >
+              <History className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">
+                {tx(
+                  studySessionLabel(item.kind),
+                  item.kind === "review" ? "词卡复习" : "沉浸式会话",
+                )}
+              </span>
+              <span className="shrink-0 text-[10.5px] tabular-nums text-muted-foreground/80">
+                {formatRecentSession(item)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={async (event) => {
+                event.stopPropagation();
+                const snapshotSessionId = workspace
+                  ? getVocabRecallSnapshotSessionId(workspace.id)
+                  : null;
+                const shouldClearResumeSnapshot =
+                  workspace != null &&
+                  item.kind === "review" &&
+                  (snapshotSessionId === item.id ||
+                    (snapshotSessionId == null && hasVocabRecallSnapshot(workspace.id)));
+                await deleteSession(item.id);
+                if (shouldClearResumeSnapshot && workspace) {
+                  clearVocabRecallSnapshot(workspace.id);
+                  clearVocabRecallResumeIntent(workspace.id);
+                }
+                setRecentStudySessions((items) =>
+                  items.filter((session) => session.id !== item.id),
+                );
+              }}
+              className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover/study-row:opacity-100"
+              aria-label={tx(
+                `Delete ${studySessionLabel(item.kind)}`,
+                `删除${item.kind === "review" ? "词卡复习" : "沉浸式会话"}`,
+              )}
+              title={tx("Delete study session", "删除学习会话")}
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -1228,11 +953,6 @@ function studySessionLabel(kind: string): string {
 }
 
 function formatRecentSession(session: StudySession): string {
-  const duration = Math.max(0, Math.round(session.durationSecs ?? 0));
-  const durationLabel = duration < 60 ? `${duration}s` : `${Math.round(duration / 60)}m`;
-  const dateLabel = new Date(session.startedAt * 1000).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-  return `${durationLabel} · ${dateLabel}`;
+  const cards = Math.max(0, session.wordsSeen ?? 0);
+  return cards > 0 ? `${cards} cards` : "Continue";
 }

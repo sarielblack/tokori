@@ -26,7 +26,12 @@
  * detection rule in `detectFormat` — nothing else changes.
  */
 import type { DictEntry } from "@/lib/db";
-import { encodeDictionaryGloss, type DictionaryMeta, type ExampleSentence } from "@/lib/lookup-result";
+import {
+  encodeDictionaryGloss,
+  type DictionaryDerivative,
+  type DictionaryMeta,
+  type ExampleSentence,
+} from "@/lib/lookup-result";
 
 export type CustomDictFormat = "json" | "csv" | "tsv";
 
@@ -91,6 +96,10 @@ function parseJson(text: string): DictEntry[] {
         readingUs?: unknown;
         readingUk?: unknown;
         examples?: unknown;
+        derivatives?: unknown;
+        root?: unknown;
+        prefixes?: unknown;
+        suffixes?: unknown;
       };
       if (typeof r.word !== "string" || typeof r.gloss !== "string") continue;
       const examples: ExampleSentence[] = Array.isArray(r.examples)
@@ -111,6 +120,29 @@ function parseJson(text: string): DictEntry[] {
         readingUs: typeof r.readingUs === "string" ? r.readingUs.trim() : null,
         readingUk: typeof r.readingUk === "string" ? r.readingUk.trim() : null,
       };
+      if (typeof r.root === "string" && r.root.trim()) meta.root = r.root.trim();
+      const stringList = (value: unknown): string[] | undefined => {
+        if (!Array.isArray(value)) return undefined;
+        const list = value
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        return list.length > 0 ? list : undefined;
+      };
+      meta.prefixes = stringList(r.prefixes);
+      meta.suffixes = stringList(r.suffixes);
+      if (Array.isArray(r.derivatives)) {
+        const derivatives: DictionaryDerivative[] = r.derivatives
+          .filter((item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === "object" && !Array.isArray(item),
+          )
+          .map((item) => ({
+            word: typeof item.word === "string" ? item.word.trim() : "",
+            relation: item.relation === "related" ? ("related" as const) : ("derived" as const),
+          }))
+          .filter((item) => item.word);
+        if (derivatives.length > 0) meta.derivatives = derivatives;
+      }
       out.push({
         word: r.word.trim(),
         altWord: null,

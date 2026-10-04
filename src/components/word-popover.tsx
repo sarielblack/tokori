@@ -73,7 +73,7 @@ import { requestComposeCard } from "@/lib/compose-card-event";
 import { sentenceAround } from "@/lib/sentence-segment";
 import { wrapAsCloze } from "@/lib/cloze";
 import { cn } from "@/lib/utils";
-import { fromDict } from "@/lib/lookup-result";
+import { formatPartOfSpeech, fromDict } from "@/lib/lookup-result";
 import type { ExampleSentence, LookupResult } from "@/lib/lookup-result";
 
 /** Append AI-generated examples to a vocab row's card_notes blob,
@@ -135,6 +135,7 @@ export function WordPopover({
   variant = "inline",
   fallbackReading = null,
   decoration = "status",
+  emphasize = false,
 }: {
   word: string;
   /** May be null when the word isn't in any installed dictionary. The cell
@@ -163,6 +164,8 @@ export function WordPopover({
   fallbackReading?: string | null;
   /** Sentence cards use a quiet hover affordance instead of status-red underlines. */
   decoration?: "status" | "subtle" | "none";
+  /** Render the card's target headword as the only bold token in tutor prose. */
+  emphasize?: boolean;
 }) {
   const { active: workspace } = useWorkspace();
   const { bump } = useSession();
@@ -490,6 +493,10 @@ export function WordPopover({
               : localStatus === "new"
                 ? "underline decoration-2 underline-offset-[3px] decoration-rose-400/85"
                 : "underline decoration-dotted decoration-2 underline-offset-[3px] decoration-muted-foreground/45";
+  // Sentence/AI prose is a lookup surface, not a grading surface. Keep the
+  // definition, save, and collection actions there, but don't expose the
+  // four SRS status buttons or the status badge beside the headword.
+  const showStatusControls = decoration === "status";
 
   // The trigger is the only thing that differs between variants; the
   // popover body below is identical for both.
@@ -520,6 +527,7 @@ export function WordPopover({
         className={cn(
           "cursor-pointer transition-colors rounded-sm px-px",
           baseDecoration,
+          emphasize && "font-semibold",
           peek && "decoration-emerald-500/40",
           localStatus === "mastered"
             ? "hover:decoration-emerald-500/40"
@@ -607,9 +615,9 @@ export function WordPopover({
                 )}
               </div>
             )}
-            {effectiveEntry?.partOfSpeech && (
+            {formatPartOfSpeech(effectiveEntry?.partOfSpeech) && (
               <div className="mt-1 text-[11px] font-medium text-muted-foreground">
-                {effectiveEntry.partOfSpeech}
+                {formatPartOfSpeech(effectiveEntry?.partOfSpeech)}
               </div>
             )}
             {/* Pitch-kind label (heiban / atamadaka / nakadaka / odaka).
@@ -632,7 +640,7 @@ export function WordPopover({
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <SpeakButton text={word} lang={lang} size="sm" />
-            {localStatus && <StatusBadge status={localStatus} />}
+            {showStatusControls && localStatus && <StatusBadge status={localStatus} />}
           </div>
         </div>
 
@@ -846,28 +854,29 @@ export function WordPopover({
           </button>
         )}
 
-        {/* 4-button status grid */}
-        <div className="grid grid-cols-4 gap-1.5 p-3 text-[11px] font-bold">
-          {STATUS_BUTTONS.map((opt) => {
-            const active = localStatus === opt.value;
-            return (
-              <button
-                key={opt.value}
-                onClick={() => void setStatus(opt.value)}
-                disabled={busy || !workspace}
-                className={cn(
-                  "rounded-lg border py-1.5 transition-all hover:scale-[1.02] active:scale-[0.98]",
-                  active
-                    ? `${opt.bg} ${opt.border} ${opt.text}`
-                    : "border-border/60 bg-transparent text-muted-foreground hover:bg-accent/40",
-                  busy && "opacity-50",
-                )}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-        </div>
+        {showStatusControls && (
+          <div className="grid grid-cols-4 gap-1.5 p-3 text-[11px] font-bold">
+            {STATUS_BUTTONS.map((opt) => {
+              const active = localStatus === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => void setStatus(opt.value)}
+                  disabled={busy || !workspace}
+                  className={cn(
+                    "rounded-lg border py-1.5 transition-all hover:scale-[1.02] active:scale-[0.98]",
+                    active
+                      ? `${opt.bg} ${opt.border} ${opt.text}`
+                      : "border-border/60 bg-transparent text-muted-foreground hover:bg-accent/40",
+                    busy && "opacity-50",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Bottom actions: save + push to Anki */}
         <div className="flex gap-1.5 border-t border-border/60 p-3 pt-2.5">

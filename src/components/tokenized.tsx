@@ -22,6 +22,7 @@ function TokenizedInner({
   showRuby,
   activeRange,
   decoration,
+  emphasizeWord,
 }: {
   text: string;
   lang: LanguageCode;
@@ -34,6 +35,8 @@ function TokenizedInner({
   activeRange?: [number, number] | null;
   /** How strongly interactive word tokens are decorated. */
   decoration?: "status" | "subtle" | "none";
+  /** Optional headword to render in a quiet bold face. */
+  emphasizeWord?: string;
 }) {
   const display = useDisplay();
   const { active: workspace } = useWorkspace();
@@ -217,6 +220,11 @@ function TokenizedInner({
           entries.get(s.text) ??
           (lang === "zh" ? fromMini(s.text) : null);
         const status = vocabStatus.get(s.text) ?? null;
+        const emphasized =
+          Boolean(emphasizeWord) &&
+          s.text.localeCompare(emphasizeWord ?? "", undefined, {
+            sensitivity: "accent",
+          }) === 0;
         // Render every word as an underlined hover trigger — even when we
         // don't have a dict entry yet. Without this, words that aren't in
         // the installed dictionary lost their underline + popover and
@@ -236,6 +244,7 @@ function TokenizedInner({
             sourceOffset={offset}
             ttsActive={active}
             decoration={decoration}
+            emphasize={emphasized}
             fallbackReading={readingFallbacks.get(s.text) ?? null}
           />
         );

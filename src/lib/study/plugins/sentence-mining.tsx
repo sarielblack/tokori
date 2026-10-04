@@ -427,7 +427,6 @@ function StudyView({ ctx }: StudyViewProps) {
         <h2 className="font-serif text-3xl tracking-tight">Session complete.</h2>
         <p className="text-[13.5px] text-muted-foreground">
           {idx} card{idx === 1 ? "" : "s"} ·{" "}
-          {Math.max(1, Math.floor(getActiveSecs() / 60))} min ·{" "}
           {stats.current.sentencesUsed} from your library,{" "}
           {stats.current.fallbacks} from glosses
         </p>
@@ -990,7 +989,7 @@ function PauseOverlay({
   progress,
   done,
   total,
-  elapsedSecs,
+  elapsedSecs: _elapsedSecs,
   onResume,
   onEnd,
 }: {
@@ -1001,7 +1000,6 @@ function PauseOverlay({
   onResume: () => void;
   onEnd: () => void;
 }) {
-  const minutes = Math.max(1, Math.round(elapsedSecs / 60));
   return (
     // The overlay covers the custom title bar, so make the backdrop a
     // window drag region — otherwise the window can't be moved while
@@ -1016,7 +1014,7 @@ function PauseOverlay({
           Paused
         </p>
         <p className="mt-1 text-[12px] text-muted-foreground">
-          {done} / {total} cards · {minutes}m
+          {done} / {total} cards
         </p>
         <div className="mt-4">
           <Progress value={progress} />

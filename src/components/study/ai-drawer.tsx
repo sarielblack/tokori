@@ -337,12 +337,18 @@ export function StudyAiDrawer({
           ) : (
             <div className="space-y-4">
               {turns.map((t, i) => (
-                <ChatBubble key={i} turn={t} targetLang={targetLang as LanguageCode} />
+                <ChatBubble
+                  key={i}
+                  turn={t}
+                  targetLang={targetLang as LanguageCode}
+                  targetWord={card.word}
+                />
               ))}
               {streaming && (
                 <ChatBubble
                   turn={{ role: "assistant", content: streamingText || "…" }}
                   targetLang={targetLang as LanguageCode}
+                  targetWord={card.word}
                   streaming
                 />
               )}
@@ -513,16 +519,19 @@ const ChatBubble = memo(
     prev.turn.content === next.turn.content &&
     prev.turn.role === next.turn.role &&
     prev.targetLang === next.targetLang &&
+    prev.targetWord === next.targetWord &&
     Boolean(prev.streaming) === Boolean(next.streaming),
 );
 
 function ChatBubbleInner({
   turn,
   targetLang,
+  targetWord,
   streaming,
 }: {
   turn: AiChatTurn;
   targetLang: LanguageCode;
+  targetWord: string;
   streaming?: boolean;
 }) {
   const isUser = turn.role === "user";
@@ -552,13 +561,18 @@ function ChatBubbleInner({
       </div>
     );
   }
-  // Assistant: no enclosing tinted bubble — render the markdown
-  // directly so the colored Tokenized underlines (the "highlight")
-  // are clearly visible against the panel background, exactly the
-  // way conversation-chat assistant turns render.
+  // Assistant: no enclosing tinted bubble. In the study drawer, dictionary
+  // status decorations stay quiet; only the card's headword is emphasized so
+  // the generated examples read like examples instead of a spelling check.
   return (
     <div className="text-[13.5px] leading-relaxed text-foreground/95">
-      <ChatMarkdown text={cleaned} lang={targetLang} streaming={streaming} />
+      <ChatMarkdown
+        text={cleaned}
+        lang={targetLang}
+        streaming={streaming}
+        decoration="none"
+        emphasizeWord={targetWord}
+      />
       {streaming && (
         <span className="ml-0.5 inline-block h-3.5 w-1 animate-pulse rounded-full bg-emerald-500/80 align-text-bottom" />
       )}
