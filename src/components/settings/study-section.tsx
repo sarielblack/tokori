@@ -30,9 +30,14 @@ import {
 import { pluginsForLanguage } from "@/lib/study/registry";
 import { useWorkspace } from "@/lib/workspace-context";
 import { languageName, type LanguageCode } from "@/lib/languages";
+import { useProfile } from "@/lib/profile-context";
+import { uiText } from "@/lib/ui-language";
 
 export function StudySection() {
   const { active: workspace } = useWorkspace();
+  const { profile } = useProfile();
+  const tx = (english: string, chinese: string) =>
+    uiText(profile.uiLanguage, english, chinese);
   const lang = (workspace?.targetLang ?? "en") as LanguageCode;
   const { config, loaded, set } = useStudyConfig(workspace?.id ?? null, lang);
 
@@ -50,19 +55,21 @@ export function StudySection() {
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-semibold tracking-tight">Study</h2>
+        <h2 className="text-lg font-semibold tracking-tight">
+          {tx("Study", "学习")}
+        </h2>
         <p className="text-[13px] text-muted-foreground">
-          Per-workspace flashcard settings. Currently configuring{" "}
+          {tx("Per-workspace flashcard settings. Currently configuring ", "按工作区配置词卡。当前配置：")}
           <span className="font-medium text-foreground">
             {languageName(workspace.targetLang)}
           </span>{" "}
-          — switch workspaces to tune the others independently.
+          {tx("— switch workspaces to tune the others independently.", "— 切换工作区可分别调整其他语言。")}
         </p>
       </div>
 
       <fieldset className="grid gap-4 rounded-xl border border-border bg-card p-4 sm:grid-cols-2" disabled={!loaded}>
         <div className="grid gap-1.5">
-          <Label>Default study mode</Label>
+          <Label>{tx("Default study mode", "默认学习模式")}</Label>
           <Select
             value={selectedDefault}
             onValueChange={(v) => void set("defaultPlugin", v)}
@@ -84,13 +91,15 @@ export function StudySection() {
             </SelectContent>
           </Select>
           <p className="text-[11px] text-muted-foreground">
-            What opens when you tap Flashcards. The picker on the study page
-            still lets you swap modes any time.
+            {tx(
+              "What opens when you tap Flashcards. The picker on the study page still lets you swap modes any time.",
+              "点击词卡时默认打开的模式。学习页仍可随时切换模式。",
+            )}
           </p>
         </div>
 
         <div className="grid gap-1.5">
-          <Label>Reading display</Label>
+          <Label>{tx("Reading display", "读音显示")}</Label>
           <Select
             value={config.readingMode}
             onValueChange={(v) => void set("readingMode", v as "hidden" | "shown")}
@@ -100,22 +109,23 @@ export function StudySection() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="hidden">
-                Hidden until reveal — drill the reading too
+                {tx("Hidden until reveal — drill the reading too", "翻牌后显示 — 同时练习读音")}
               </SelectItem>
               <SelectItem value="shown">
-                Show alongside the word — drill only the meaning
+                {tx("Show alongside the word — drill only the meaning", "与单词一起显示 — 只练习释义")}
               </SelectItem>
             </SelectContent>
           </Select>
           <p className="text-[11px] text-muted-foreground">
-            CJK workspaces default to hidden — you actively recall pinyin /
-            romaji as part of the card. Latin-script langs default to shown
-            since the script is the reading.
+            {tx(
+              "CJK workspaces default to hidden — you actively recall pinyin / romaji as part of the card. Latin-script langs default to shown since the script is the reading.",
+              "中日韩工作区默认隐藏读音，让你主动回忆拼音或罗马字；拉丁字母语言默认显示，因为单词本身就是读音线索。",
+            )}
           </p>
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="dailyNew">Daily new card limit</Label>
+          <Label htmlFor="dailyNew">{tx("Daily new card limit", "每日新卡上限")}</Label>
           <Input
             id="dailyNew"
             type="number"
@@ -127,13 +137,15 @@ export function StudySection() {
             }
           />
           <p className="text-[11px] text-muted-foreground">
-            New words introduced per day. 0 disables new cards entirely
-            (useful when you want to clear a backlog).
+            {tx(
+              "New words introduced per day. 0 disables new cards entirely (useful when you want to clear a backlog).",
+              "每天引入的新词数量。设为 0 可暂时关闭新卡（适合清理积压）。",
+            )}
           </p>
         </div>
 
         <div className="grid gap-1.5">
-          <Label htmlFor="dailyReview">Daily review limit</Label>
+          <Label htmlFor="dailyReview">{tx("Daily review limit", "每日复习上限")}</Label>
           <Input
             id="dailyReview"
             type="number"
@@ -148,8 +160,10 @@ export function StudySection() {
             }
           />
           <p className="text-[11px] text-muted-foreground">
-            Caps the review queue per session. Bigger isn't better — burnout
-            tomorrow is a real cost.
+            {tx(
+              "Caps the review queue per session. Bigger isn't better — burnout tomorrow is a real cost.",
+              "限制每次会话的复习队列。越多不一定越好，避免第二天疲劳。",
+            )}
           </p>
         </div>
 
@@ -161,10 +175,14 @@ export function StudySection() {
             className="mt-1"
           />
           <span>
-            <span className="text-[13px] font-medium">Auto-play audio on flip</span>
+            <span className="text-[13px] font-medium">
+              {tx("Auto-play audio on reveal", "展示答案时自动播放发音")}
+            </span>
             <span className="block text-[11.5px] text-muted-foreground">
-              Speak the headword each time a new card lands. Routes through
-              your TTS provider (Settings → Text-to-speech).
+              {tx(
+                "Speak the headword each time a new card lands. Routes through your TTS provider (Settings → Text-to-speech).",
+                "每张新卡出现时朗读词条。通过你的 TTS 提供方播放（设置 → 文字转语音）。",
+              )}
             </span>
           </span>
         </label>
@@ -177,10 +195,14 @@ export function StudySection() {
             className="mt-1"
           />
           <span>
-            <span className="text-[13px] font-medium">Show example sentences</span>
+            <span className="text-[13px] font-medium">
+              {tx("Show example sentences", "显示例句")}
+            </span>
             <span className="block text-[11.5px] text-muted-foreground">
-              When a card has saved example sentences, render them on the
-              back. Turn off if you find them visually noisy.
+              {tx(
+                "When a card has saved example sentences, render them on the back. Turn off if you find them visually noisy.",
+                "词卡有已保存例句时，在背面显示。若觉得画面拥挤，可以关闭。",
+              )}
             </span>
           </span>
         </label>

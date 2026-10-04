@@ -12,6 +12,7 @@ import {
   deleteSession,
   endSession,
   finalizeStaleSessions,
+  resumeSession,
   startSession,
   updateSession,
   type StudySession,
@@ -53,6 +54,8 @@ type SessionContextValue = {
   pause: () => void;
   /** Resume a paused session. No-op if no session OR not paused. */
   resume: () => void;
+  /** Re-open a previously ended session row and continue its clock. */
+  resumePersisted: (id: number) => Promise<boolean>;
   end: () => Promise<void>;
   /** Discard the active session — deletes its row outright instead of
    *  saving it, for sessions started by accident or not worth logging.
@@ -87,6 +90,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // bugs in the tick handler.
   const runningSinceRef = useRef<number | null>(null);
   const [paused, setPaused] = useState(false);
+  // Distinguish a pause caused by leaving the app from one the learner
+  // explicitly requested. Only the former may resume automatically when
+  // the window becomes visible again.
+  const autoPausedRef = useRef(false);
   // Captures whether the user ever paused this session. When true,
   // `end()` writes durationSecs explicitly via `updateSession`
   // instead of relying on the wall-clock `endSession` path.
@@ -166,16 +173,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           await endRef.current?.();
           // falls through to the create path below
         } else {
-          // Same kind — resume if paused, else just bump the idle timer.
-          // `created: false` tells the caller they don't own this
-          // session; its lifecycle is someone else's responsibility.
-          if (paused) {
+          // Same kind — only resume a pause caused by the window becoming
+          // inactive. A manual pause is sticky until the learner presses
+          // Resume; otherwise a plugin re-render could silently defeat the
+          // pause button.
+          if (
+            paused &&
+            autoPausedRef.current &&
+            (typeof document === "undefined" ||
+              (document.visibilityState === "visible" &&
+                (typeof document.hasFocus !== "function" ||
+                  document.hasFocus())))
+          ) {
+            autoPausedRef.current = false;
             runningSinceRef.current = Date.now();
             lastSegmentSecsRef.current = 0;
             setPaused(false);
             startTick();
           }
-          scheduleIdleEnd();
+          if (runningSinceRef.current != null) scheduleIdleEnd();
           return { session, created: false };
         }
       }
@@ -190,6 +206,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setSession(s);
         setActiveSecs(0);
         setPaused(false);
+        autoPausedRef.current = false;
         everPausedRef.current = false;
         runningSinceRef.current = Date.now();
         lastSegmentSecsRef.current = 0;
@@ -232,12 +249,37 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const resume = useCallback(() => {
     if (!session || runningSinceRef.current != null) return;
+    autoPausedRef.current = false;
     runningSinceRef.current = Date.now();
     lastSegmentSecsRef.current = 0;
     setPaused(false);
     startTick();
     scheduleIdleEnd();
   }, [session, scheduleIdleEnd, startTick]);
+
+  const resumePersisted = useCallback(
+    async (id: number): Promise<boolean> => {
+      if (!workspace || session) return session?.id === id;
+      const restored = await resumeSession(id);
+      if (!restored || restored.workspaceId !== workspace.id) return false;
+      clearIdle();
+      clearTick();
+      setSession(restored);
+      setActiveSecs(Math.max(0, restored.durationSecs ?? 0));
+      setPaused(false);
+      autoPausedRef.current = false;
+      // A resumed row already has elapsed time. Mark it as segmented so
+      // end() writes old duration + the new active segment instead of
+      // counting the time spent away from the app.
+      everPausedRef.current = true;
+      runningSinceRef.current = Date.now();
+      lastSegmentSecsRef.current = 0;
+      startTick();
+      scheduleIdleEnd();
+      return true;
+    },
+    [workspace, session, scheduleIdleEnd, startTick],
+  );
 
   const end = useCallback(async () => {
     clearIdle();
@@ -270,6 +312,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
     setSession(null);
     setActiveSecs(0);
+    autoPausedRef.current = false;
     everPausedRef.current = false;
   }, [session, activeSecs]);
 
@@ -286,6 +329,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setPaused(false);
     setSession(null);
     setActiveSecs(0);
+    autoPausedRef.current = false;
     everPausedRef.current = false;
   }, [session]);
 
@@ -321,7 +365,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // AUTO pause auto-resumes — a pause the user chose stays paused
   // until they resume it themselves (runningSinceRef is already null
   // when blur fires, so we never claim their pause as ours).
-  const autoPausedRef = useRef(false);
   useEffect(() => {
     autoPausedRef.current = false;
   }, [session?.id]);
@@ -390,6 +433,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         endIfActive,
         pause,
         resume,
+        resumePersisted,
         end,
         discard,
         bump,

@@ -2919,6 +2919,37 @@ export async function endSession(id: number): Promise<void> {
   );
 }
 
+/** Re-open a completed in-app session so its study snapshot can continue.
+ *  The accumulated duration is intentionally preserved; SessionProvider
+ *  adds only the new active segment when the learner finishes again. */
+export async function resumeSession(id: number): Promise<StudySession | null> {
+  if (HOSTED) {
+    return probeWorkspace((workspaceId) =>
+      cloudUpdateSession({
+        workspaceId,
+        sessionId: id,
+        patch: { endedAt: null },
+      }),
+    );
+  }
+  if (!isTauri()) {
+    const s = fb.sessions.find((x) => x.id === id);
+    if (!s || s.endedAt == null) return null;
+    s.endedAt = null;
+    return { ...s };
+  }
+  const db = await getDb();
+  await db.execute(
+    "UPDATE study_sessions SET ended_at = NULL WHERE id = $1 AND ended_at IS NOT NULL",
+    [id],
+  );
+  const rows = await db.select<SessionRow[]>(
+    `SELECT ${SESSION_COLS} FROM study_sessions WHERE id = $1 AND ended_at IS NULL`,
+    [id],
+  );
+  return rows.length > 0 ? rowToSession(rows[0]) : null;
+}
+
 /**
  * Close any study_sessions rows that were started but never finalized
  * — typically because an earlier app version (or a hard quit) didn't

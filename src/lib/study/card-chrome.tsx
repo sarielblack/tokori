@@ -205,6 +205,7 @@ export function BlurReveal({
 
 export function SideRail({
   onSpeak,
+  showSpeak = true,
   onNotes,
   onAi,
   notesOpen,
@@ -213,6 +214,7 @@ export function SideRail({
   aiShortcut,
 }: {
   onSpeak: () => void;
+  showSpeak?: boolean;
   onNotes: () => void;
   onAi: () => void;
   notesOpen: boolean;
@@ -223,10 +225,12 @@ export function SideRail({
   aiShortcut?: string;
 }) {
   return (
-    <div className="hidden lg:flex fixed right-3 top-1/2 -translate-y-1/2 flex-col gap-2 z-30">
-      <RailButton onClick={onSpeak} title="Play pronunciation">
-        <Volume2 className="size-4" />
-      </RailButton>
+    <div className="fixed right-3 top-1/2 z-30 hidden -translate-y-1/2 flex-col gap-1.5 opacity-65 transition-opacity hover:opacity-100 lg:flex">
+      {showSpeak && (
+        <RailButton onClick={onSpeak} title="Play pronunciation">
+          <Volume2 className="size-4" />
+        </RailButton>
+      )}
       <RailButton
         onClick={onAi}
         title={`Ask AI about this card${aiShortcut ? `  ·  ${aiShortcut}` : ""}`}
@@ -263,10 +267,10 @@ function RailButton({
       title={title}
       aria-label={title}
       className={cn(
-        "flex size-10 items-center justify-center rounded-xl border transition-colors",
+        "flex size-9 items-center justify-center rounded-full border border-border/50 bg-background/25 backdrop-blur-md transition-colors",
         active
           ? "border-foreground/30 bg-accent text-foreground"
-          : "border-border bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+          : "text-muted-foreground hover:bg-background/65 hover:text-foreground",
       )}
     >
       {children}

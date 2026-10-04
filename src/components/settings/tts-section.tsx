@@ -31,6 +31,7 @@ import {
   OPENAI_VOICES,
   SUPERTONIC_DEFAULT_VOICE_BY_LANG,
   SUPERTONIC_VOICES,
+  type EnglishAccent,
   type TTSKind,
 } from "@/lib/tts";
 import { profileFor } from "@/lib/languages";
@@ -163,6 +164,37 @@ export function TTSSection() {
           );
         })}
       </div>
+
+      {langHint === "en" && (
+        <div className="grid gap-2 rounded-xl border border-border bg-card p-4 sm:max-w-md">
+          <Label>English pronunciation</Label>
+          <Select
+            value={tts.config.englishAccent ?? "auto"}
+            onValueChange={(v) =>
+              void tts.setConfig({
+                ...tts.config,
+                englishAccent: v as EnglishAccent,
+                // A custom Edge voice is more specific than this preference;
+                // clear it so the selected accent immediately takes effect.
+                edgeVoice: undefined,
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="auto">Automatic (currently US English)</SelectItem>
+              <SelectItem value="us">American English (US)</SelectItem>
+              <SelectItem value="uk">British English (UK)</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            Applies to English word and sentence audio. Tokori uses one selected
+            voice at a time instead of showing duplicate pronunciation buttons.
+          </p>
+        </div>
+      )}
 
       {/* Per-provider config */}
       {tts.config.kind === "browser" && (

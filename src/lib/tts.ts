@@ -10,6 +10,8 @@ export type TTSKind =
   | "fish"
   | "supertonic";
 
+export type EnglishAccent = "auto" | "us" | "uk";
+
 export type TTSConfig = {
   kind: TTSKind;
   /** OpenAI voice ("alloy"|"echo"|"fable"|"onyx"|"nova"|"shimmer"|"verse"|"ballad"). */
@@ -31,6 +33,8 @@ export type TTSConfig = {
   /** Edge TTS — free, no key, multi-voice per language. Voice id like
    * "zh-CN-XiaoxiaoNeural" / "ja-JP-NanamiNeural". */
   edgeVoice?: string;
+  /** Preferred English pronunciation when the active voice supports it. */
+  englishAccent?: EnglishAccent;
   /** Local fish-speech / OmniVoice server. Both projects expose a
    *  similar HTTP shape (POST /v1/tts {text, reference_id?, format}),
    *  so one config covers both — point this at whichever you're
@@ -95,6 +99,7 @@ export const DEFAULT_TTS_CONFIG: TTSConfig = {
   supertonicApiShape: "supertonic",
   supertonicFormat: "wav",
   rate: 1.0,
+  englishAccent: "auto",
 };
 
 /** Supertonic preset voices. Documented in the supertonic-py serve guide;
@@ -144,17 +149,90 @@ export const MINIMAX_DEFAULT_VOICE_BY_LANG: Record<string, string> =
   );
 
 let currentAudio: HTMLAudioElement | null = null;
+let currentAudioStop: (() => void) | null = null;
+
+type GeneratedAudio = { buf: ArrayBuffer; mime: string };
+// Keep a small in-memory cache for free/local TTS. Cards are revisited often
+// during a study session, and this removes the network round-trip from the
+// actual reveal after the card has had a chance to prefetch.
+const generatedAudioCache = new Map<string, GeneratedAudio>();
+const generatedAudioInflight = new Map<string, Promise<GeneratedAudio>>();
+const GENERATED_AUDIO_CACHE_LIMIT = 48;
+
+function generatedAudioKey(text: string, config: TTSConfig, lang?: string): string {
+  return [
+    config.kind,
+    lang ?? "",
+    config.edgeVoice ?? "",
+    config.englishAccent ?? "auto",
+    config.rate ?? 1,
+    text,
+  ].join("\u0000");
+}
+
+async function getCachedEdgeAudio(
+  text: string,
+  config: TTSConfig,
+  lang?: string,
+): Promise<GeneratedAudio> {
+  const trimmed = text.trim();
+  const key = generatedAudioKey(trimmed, config, lang);
+  const cached = generatedAudioCache.get(key);
+  if (cached) return cached;
+  const active = generatedAudioInflight.get(key);
+  if (active) return active;
+
+  const langCode = (lang ?? "").slice(0, 2).toLowerCase();
+  const voice = edgeVoiceFor(config, langCode);
+  const request = edgeTTS({
+    text: trimmed,
+    voice,
+    rate: rateToEdge(config.rate ?? 1.0),
+  })
+    .then(({ buf }) => {
+      const result = { buf, mime: "audio/mpeg" };
+      generatedAudioCache.set(key, result);
+      while (generatedAudioCache.size > GENERATED_AUDIO_CACHE_LIMIT) {
+        const oldest = generatedAudioCache.keys().next().value;
+        if (oldest == null) break;
+        generatedAudioCache.delete(oldest);
+      }
+      return result;
+    })
+    .finally(() => {
+      generatedAudioInflight.delete(key);
+    });
+  generatedAudioInflight.set(key, request);
+  return request;
+}
+
+/** Start fetching supported free/local speech before the user reveals it. */
+export async function prefetchSpeech(
+  text: string,
+  config: TTSConfig,
+  opts: SpeakOptions = {},
+): Promise<void> {
+  if (!text.trim() || config.kind !== "edge") return;
+  await getCachedEdgeAudio(text, config, opts.lang);
+}
 
 /** Stop any TTS currently playing — browser utterance + paid-provider audio. */
 export function stopTTS(): void {
   if (typeof window !== "undefined" && window.speechSynthesis) {
     window.speechSynthesis.cancel();
   }
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.src = "";
+  const audio = currentAudio;
+  const stopPlayback = currentAudioStop;
+  // Release the active play promise before tearing down the element. This
+  // lets sequential autoplay continue/cancel cleanly instead of leaving an
+  // awaited word permanently suspended when the user changes cards.
+  stopPlayback?.();
+  if (audio) {
+    audio.pause();
+    audio.src = "";
     currentAudio = null;
   }
+  currentAudioStop = null;
 }
 
 export type SpeakOptions = {
@@ -205,17 +283,8 @@ export async function speak(
   }
 
   if (config.kind === "edge") {
-    const langCode = (opts.lang ?? "").slice(0, 2).toLowerCase();
-    const voice =
-      config.edgeVoice?.trim() ||
-      EDGE_DEFAULT_VOICE_BY_LANG[langCode] ||
-      EDGE_DEFAULT_VOICE_BY_LANG.en;
-    const { buf } = await edgeTTS({
-      text: trimmed,
-      voice,
-      rate: rateToEdge(config.rate ?? 1.0),
-    });
-    await playAudio(buf, "audio/mpeg");
+    const { buf, mime } = await getCachedEdgeAudio(trimmed, config, opts.lang);
+    await playAudio(buf, mime);
     return;
   }
 
@@ -268,20 +337,21 @@ export async function speak(
   if (typeof window === "undefined" || !window.speechSynthesis) {
     throw new Error("Browser TTS not available");
   }
+  const speechLang = preferredSpeechLanguage(config, opts.lang);
   const u = new SpeechSynthesisUtterance(trimmed);
-  if (opts.lang) u.lang = opts.lang;
+  if (speechLang) u.lang = speechLang;
   if (config.rate) u.rate = config.rate;
   const voices = window.speechSynthesis.getVoices();
   if (config.browserVoiceURI) {
     const v = voices.find((v) => v.voiceURI === config.browserVoiceURI);
     if (v) u.voice = v;
-  } else if (opts.lang) {
+  } else if (speechLang) {
     // Auto-pick the first installed voice that matches the workspace target lang.
     // Without this, browsers often fall back to the default English voice and
     // mispronounce the sample (which is in the target language).
-    const prefix = opts.lang.toLowerCase().slice(0, 2);
+    const prefix = speechLang.toLowerCase().slice(0, 2);
     const match =
-      voices.find((v) => v.lang.toLowerCase() === opts.lang!.toLowerCase()) ??
+      voices.find((v) => v.lang.toLowerCase() === speechLang.toLowerCase()) ??
       voices.find((v) => v.lang.toLowerCase().startsWith(prefix + "-")) ??
       voices.find((v) => v.lang.toLowerCase().startsWith(prefix));
     if (match) u.voice = match;
@@ -344,10 +414,7 @@ export async function synthesize(
 
   if (config.kind === "edge") {
     const langCode = (opts.lang ?? "").slice(0, 2).toLowerCase();
-    const voice =
-      config.edgeVoice?.trim() ||
-      EDGE_DEFAULT_VOICE_BY_LANG[langCode] ||
-      EDGE_DEFAULT_VOICE_BY_LANG.en;
+    const voice = edgeVoiceFor(config, langCode);
     const { buf } = await edgeTTS({
       text: trimmed,
       voice,
@@ -453,10 +520,7 @@ export async function synthesizeBytes(
 
   if (config.kind === "edge") {
     const langCode = (opts.lang ?? "").slice(0, 2).toLowerCase();
-    const voice =
-      config.edgeVoice?.trim() ||
-      EDGE_DEFAULT_VOICE_BY_LANG[langCode] ||
-      EDGE_DEFAULT_VOICE_BY_LANG.en;
+    const voice = edgeVoiceFor(config, langCode);
     const { buf, boundaries } = await edgeTTS({
       text: trimmed,
       voice,
@@ -741,6 +805,33 @@ export const EDGE_DEFAULT_VOICE_BY_LANG: Record<string, string> = {
   pt: "pt-BR-FranciscaNeural",
 };
 
+const EDGE_ENGLISH_VOICE_BY_ACCENT: Record<Exclude<EnglishAccent, "auto">, string> = {
+  us: "en-US-AriaNeural",
+  uk: "en-GB-SoniaNeural",
+};
+
+/** Resolve one voice for the current utterance. A custom Edge voice wins;
+ * otherwise the English accent preference selects US or UK English. */
+function edgeVoiceFor(config: TTSConfig, langCode: string): string {
+  const custom = config.edgeVoice?.trim();
+  if (custom) return custom;
+  if (langCode === "en" && config.englishAccent && config.englishAccent !== "auto") {
+    return EDGE_ENGLISH_VOICE_BY_ACCENT[config.englishAccent];
+  }
+  return EDGE_DEFAULT_VOICE_BY_LANG[langCode] ?? EDGE_DEFAULT_VOICE_BY_LANG.en;
+}
+
+function preferredSpeechLanguage(config: TTSConfig, lang?: string): string | undefined {
+  if (!lang) return undefined;
+  if (lang.toLowerCase().startsWith("en") && config.englishAccent === "uk") {
+    return "en-GB";
+  }
+  if (lang.toLowerCase().startsWith("en") && config.englishAccent === "us") {
+    return "en-US";
+  }
+  return lang;
+}
+
 function rateToEdge(rate: number): string {
   // Edge TTS expects rate as a percentage offset like "+0%", "-25%", "+50%".
   const pct = Math.round((rate - 1) * 100);
@@ -939,17 +1030,31 @@ async function playAudio(buf: ArrayBuffer, mime: string): Promise<void> {
   const audio = new Audio(url);
   currentAudio = audio;
   return new Promise<void>((resolve, reject) => {
-    audio.onended = () => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      audio.onended = null;
+      audio.onerror = null;
       URL.revokeObjectURL(url);
       if (currentAudio === audio) currentAudio = null;
-      resolve();
+      if (currentAudioStop === stopPlayback) currentAudioStop = null;
+      if (error) reject(error);
+      else resolve();
+    };
+    function stopPlayback(): void {
+      finish();
+    }
+    currentAudioStop = stopPlayback;
+    audio.onended = () => {
+      finish();
     };
     audio.onerror = () => {
-      URL.revokeObjectURL(url);
-      if (currentAudio === audio) currentAudio = null;
-      reject(new Error("audio playback failed"));
+      finish(new Error("audio playback failed"));
     };
-    void audio.play().catch(reject);
+    void audio.play().catch((error) =>
+      finish(error instanceof Error ? error : new Error(String(error))),
+    );
   });
 }
 

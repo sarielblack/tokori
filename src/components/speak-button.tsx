@@ -33,8 +33,19 @@ export function SpeakButton({
   cachedAudioAvailable?: boolean;
 }) {
   const tts = useTTS();
-  const sizing =
-    size === "xs"
+  const englishAccent =
+    lang?.toLowerCase().startsWith("en")
+      ? tts.config.englishAccent === "uk"
+        ? "UK"
+        : tts.config.englishAccent === "us"
+          ? "US"
+          : "AUTO"
+      : null;
+  const sizing = englishAccent
+    ? size === "xs"
+      ? "h-6 min-w-10 px-1 [&_svg]:size-3"
+      : "h-7 min-w-12 px-1.5 [&_svg]:size-3.5"
+    : size === "xs"
       ? "size-6 [&_svg]:size-3"
       : "size-7 [&_svg]:size-3.5";
   return (
@@ -60,11 +71,16 @@ export function SpeakButton({
       }}
       title={tts.busy ? "Stop" : title}
       className={cn(
-        "inline-flex items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
+        "inline-flex items-center justify-center gap-1 rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
         sizing,
         className,
       )}
     >
+      {englishAccent && (
+        <span className="text-[9px] font-semibold leading-none tracking-wide">
+          {englishAccent}
+        </span>
+      )}
       {tts.busy ? (
         <Loader2 className="animate-spin" />
       ) : tts.config.kind === "browser" ? (

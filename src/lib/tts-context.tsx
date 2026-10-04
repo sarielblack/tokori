@@ -15,6 +15,7 @@ import {
   bcp47ForLang,
   DEFAULT_TTS_CONFIG,
   playBytes,
+  prefetchSpeech,
   speak,
   stopTTS,
   synthesizeBytes,
@@ -31,6 +32,8 @@ type TTSContextValue = {
    *  untouched so it doesn't spin every SpeakButton or toast once per
    *  card — it just tries to play and stays quiet if it can't. */
   speak: (text: string, lang?: string, opts?: { silent?: boolean }) => Promise<void>;
+  /** Warm the configured free/local TTS cache for the next reveal. */
+  prefetch: (text: string, lang?: string) => Promise<void>;
   /** Synthesise to raw bytes — used by the flashcard "Generate audio"
    *  button to persist the result on a vocab row. Falls back to an
    *  error when the active provider is browser-default (which can't be
@@ -133,6 +136,15 @@ export function TTSProvider({ children }: { children: ReactNode }) {
     [config, providers],
   );
 
+  const prefetch = useCallback(
+    async (text: string, lang?: string) => {
+      await prefetchSpeech(text, config, {
+        lang: lang ? bcp47ForLang(lang) : undefined,
+      });
+    },
+    [config],
+  );
+
   const playCached = useCallback(async (bytes: Uint8Array, mime?: string) => {
     setBusy(true);
     try {
@@ -153,6 +165,7 @@ export function TTSProvider({ children }: { children: ReactNode }) {
         config,
         setConfig,
         speak: speakNow,
+        prefetch,
         synthesize,
         playCached,
         stop,

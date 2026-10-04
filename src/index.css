@@ -110,6 +110,35 @@ body,
   overscroll-behavior: none;
 }
 
+/* When a personal background is enabled, the shell itself and the two main
+ * surface families become translucent.  The background image lives behind
+ * the complete shell (including the sidebar); these selectors keep the
+ * existing Tailwind surface classes while routing their alpha through the
+ * user's display controls. */
+.tokori-custom-background {
+  background-color: transparent !important;
+}
+
+.tokori-custom-background [class~="bg-sidebar"] {
+  background-color: color-mix(
+    in oklch,
+    var(--color-sidebar) var(--tokori-sidebar-opacity),
+    transparent
+  ) !important;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.tokori-custom-background [class*="bg-card"] {
+  background-color: color-mix(
+    in oklch,
+    var(--color-card) var(--tokori-card-opacity),
+    transparent
+  ) !important;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
 /* Tailwind v4's Preflight reverted buttons to the native `cursor: default`
    (an arrow), so clickable controls built on <button> — sidebar nav, the
    settings button, toggles, popover triggers — stopped showing the pointing

@@ -152,7 +152,8 @@ function StudyView({ ctx }: StudyViewProps) {
   // Active-only time accumulator — pauses for backgrounded tabs and
   // for the in-app pause overlay so duration reflects time the user
   // actually spent practising.
-  const getActiveSecs = useActiveSessionTime(paused);
+  const studyPaused = paused || ctx.sessionPaused;
+  const getActiveSecs = useActiveSessionTime(studyPaused);
 
   // Practice toggles — all persisted (usePersistentToggle) so the
   // controls a learner sets carry over to their next session instead of
@@ -238,9 +239,9 @@ function StudyView({ ctx }: StudyViewProps) {
   // ensureSessionStarted, which auto-resumes a paused session — so the
   // pause + frozen clock wouldn't stick. (Mirrors vocab-recall.)
   useEffect(() => {
-    if (!started || paused) return;
+    if (!started || studyPaused) return;
     void ctx.ensureSessionStarted("review");
-  }, [ctx, started, paused]);
+  }, [ctx, started, studyPaused]);
 
   // Every hook below — the `chars` memo and the two effects — must run on
   // every render, including while the prestart gate is still up. So the
@@ -441,12 +442,12 @@ function StudyView({ ctx }: StudyViewProps) {
   // the sibling plugins. Local `paused` also freezes useActiveSessionTime
   // and shows the overlay.
   function doPause() {
-    if (paused) return;
+    if (studyPaused) return;
     setPaused(true);
     ctx.pauseSession();
   }
   function doResume() {
-    if (!paused) return;
+    if (!studyPaused) return;
     setPaused(false);
     ctx.resumeSession();
   }
@@ -912,7 +913,7 @@ function StudyView({ ctx }: StudyViewProps) {
       {/* Pause overlay — fullscreen take-a-break with Resume / End.
           End ships partial stats so the host's session-summary screen
           still gets accurate numbers. */}
-      {paused && (
+      {studyPaused && (
         <PauseOverlay
           progress={
             queue.length > 0

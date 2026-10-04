@@ -8,6 +8,7 @@ import {
 import { getSetting, setSetting } from "./db";
 import type { LanguageCode } from "./languages";
 import type { LevelInfo, ScaleKind } from "./level";
+import type { UiLanguage } from "./ui-language";
 
 /** "auto" defers to scaleFor(workspace.targetLang). "custom" requires
  *  `customScale` to be populated. */
@@ -52,6 +53,8 @@ export type Profile = {
    *  "local"   — on-device whisper.cpp (desktop only). Needs a model
    *              downloaded under Settings → Voice → Dictation. */
   sttKind: "auto" | "browser" | "whisper" | "local";
+  /** Language of Tokori's own settings/navigation UI. */
+  uiLanguage: UiLanguage;
 };
 
 const DEFAULT_PROFILE: Profile = {
@@ -64,6 +67,7 @@ const DEFAULT_PROFILE: Profile = {
   levelScale: "auto",
   customScale: null,
   sttKind: "auto",
+  uiLanguage: "en",
 };
 
 type ProfileContextValue = {
@@ -92,6 +96,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       getSetting(`${KEY_PREFIX}levelScale`),
       getSetting(`${KEY_PREFIX}customScale`),
       getSetting(`${KEY_PREFIX}sttKind`),
+      getSetting(`${KEY_PREFIX}uiLanguage`),
     ])
       .then(
         ([
@@ -104,6 +109,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
           levelScale,
           customScale,
           sttKind,
+          uiLanguage,
         ]) => {
           if (cancelled) return;
           // manualScore is stored as a string in the settings table; parse
@@ -137,6 +143,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
               sttKind === "local"
                 ? sttKind
                 : "auto",
+            uiLanguage: uiLanguage === "zh-CN" ? "zh-CN" : "en",
           });
         },
       )

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   ArrowRight,
   Ban,
   CheckCircle2,
+  ChevronLeft,
   Loader2,
+  MoreHorizontal,
   Pause,
   Play,
   RocketIcon,
@@ -12,7 +15,6 @@ import {
   SkipForward,
   Sparkles,
   StopCircle,
-  Volume2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Pinyin } from "@/components/pinyin";
@@ -45,8 +47,10 @@ import {
   updateVocabFields,
 } from "@/lib/db";
 import {
+  legacyNotesRemainder,
   parseExamples,
-  serialiseExamples,
+  parseMorphology,
+  serialiseExamplesWithMorphology,
   type ExampleSentence,
 } from "@/lib/examples";
 import { Tokenized } from "@/components/tokenized";
@@ -64,9 +68,10 @@ import {
   UNCAPPED_DAILY_LIMITS,
   useStudyConfig,
 } from "@/lib/study-config";
+import { lookupDictCached } from "@/lib/word-lookup";
+import { fromDict, type LookupResult } from "@/lib/lookup-result";
 import { gradeIntervalHints } from "@/lib/fsrs";
 import {
-  BlurReveal,
   FSRS_INTERVAL_HINTS,
   GradeKeyChips,
   GradeRow,
@@ -78,6 +83,14 @@ import {
 import { useProviderConfigs } from "@/lib/provider-context";
 import { useTTS } from "@/lib/tts-context";
 import { PrestartShell } from "@/lib/study/prestart";
+import {
+  clearVocabRecallSnapshot,
+  loadVocabRecallSnapshot,
+  saveVocabRecallSnapshot,
+  type VocabRecallPhase,
+  type VocabRecallSnapshot,
+  type VocabRecallStage,
+} from "@/lib/study/vocab-recall-session";
 import { cn } from "@/lib/utils";
 import { HOSTED } from "@/lib/build-flags";
 
@@ -108,6 +121,9 @@ function StudyView({ ctx }: StudyViewProps) {
   const { config } = useStudyConfig(ctx.workspace.id, ctx.workspace.targetLang);
   const tts = useTTS();
   const { active: provider, sendChat } = useProviderConfigs();
+  type Stage = VocabRecallStage;
+  const initialStage: Stage = "word";
+
   // Per-card override map for `cardNotes` — set when the user generates a new
   // example so the UI updates without waiting for a refetch.
   const [cardNotesOverride, setCardNotesOverride] = useState<Record<number, string>>({});
@@ -125,12 +141,33 @@ function StudyView({ ctx }: StudyViewProps) {
     return buildStudySessionQueue(ctx.dueVocab, ctx.vocab, UNCAPPED_DAILY_LIMITS);
   }, [ctx.dueVocab, ctx.vocab]);
 
+  // Restore only a real in-progress session. A snapshot is validated against
+  // the freshly loaded study pool, so deleted/mastered cards are dropped while
+  // the remaining queue order (including Again reinsertions) is preserved.
+  const restoredSnapshot = useMemo(
+    () =>
+      loadVocabRecallSnapshot(ctx.workspace.id, ctx.vocab, ctx.dueVocab),
+    [ctx.workspace.id, ctx.vocab, ctx.dueVocab],
+  );
+  const restoredQueue = useMemo(() => {
+    if (!restoredSnapshot) return null;
+    const byId = new Map<number, VocabEntry>();
+    for (const card of ctx.vocab) byId.set(card.id, card);
+    for (const card of ctx.dueVocab) byId.set(card.id, card);
+    const queue = restoredSnapshot.cardIds
+      .map((id) => byId.get(id))
+      .filter((card): card is VocabEntry => card != null);
+    return queue.length > 0 ? queue : null;
+  }, [ctx.vocab, ctx.dueVocab, restoredSnapshot]);
+
   // Per-session size override. `null` means "haven't picked yet" — we
   // always show the prestart picker so the user can decide whether to
   // drill without SRS *before* a single grade flows. The picked value
   // is just sliced off the front of `initialQueue`, so it's a one-time
   // choice that doesn't persist to settings.
-  const [sessionSize, setSessionSize] = useState<number | null>(null);
+  const [sessionSize, setSessionSize] = useState<number | null>(
+    () => restoredSnapshot?.sessionSize ?? null,
+  );
   // The slice-of-the-front the user committed to. Recomputed when
   // the picker resolves OR when initialQueue changes (rare — only on
   // workspace switch).
@@ -139,25 +176,38 @@ function StudyView({ ctx }: StudyViewProps) {
     return initialQueue.slice(0, sessionSize);
   }, [initialQueue, sessionSize]);
 
-  const [queue, setQueue] = useState<VocabEntry[]>(sessionStartingQueue);
+  const [queue, setQueue] = useState<VocabEntry[]>(
+    () => restoredQueue ?? sessionStartingQueue,
+  );
   // Once the user picks a session size, replace the live queue with
   // that slice. We only do this the first time sessionSize transitions
   // from null → number; subsequent grades / boosts keep mutating
   // `queue` directly.
   useEffect(() => {
-    if (sessionSize == null) return;
+    if (sessionSize == null || restoredQueue != null) return;
     setQueue(sessionStartingQueue);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionSize]);
-  const [idx, setIdx] = useState(0);
-  const [reviewedCount, setReviewedCount] = useState(0);
-  const [grades, setGrades] = useState({ again: 0, hard: 0, good: 0, easy: 0 });
+  }, [sessionSize, restoredQueue]);
+  const [idx, setIdx] = useState(() => restoredSnapshot?.idx ?? 0);
+  const [reviewedCount, setReviewedCount] = useState(
+    () => restoredSnapshot?.reviewedCount ?? 0,
+  );
+  const [grades, setGrades] = useState(
+    () => restoredSnapshot?.grades ?? { again: 0, hard: 0, good: 0, easy: 0 },
+  );
   // Per-card breakdown for the session summary. Stored in grading order
   // so the summary screen can show "what you studied" verbatim. We dedupe
   // by word at summary time — a card graded Again then Good shows only
   // its final grade so the user isn't confused by the same word twice.
-  const [reviewedCards, setReviewedCards] = useState<ReviewedCardSummary[]>([]);
-  const startedAt = useMemo(() => Math.floor(Date.now() / 1000), []);
+  const [reviewedCards, setReviewedCards] = useState<ReviewedCardSummary[]>(
+    () => restoredSnapshot?.reviewedCards ?? [],
+  );
+  const startedAt = useState(
+    () => restoredSnapshot?.startedAt ?? Math.floor(Date.now() / 1000),
+  )[0];
+  const [sessionId, setSessionId] = useState<number | null>(
+    () => restoredSnapshot?.sessionId ?? null,
+  );
 
   // Optional production-direction round after the recall queue is
   // exhausted. Same words reversed: gloss prompt, recall the word.
@@ -168,8 +218,10 @@ function StudyView({ ctx }: StudyViewProps) {
   //   "promptProd" — recall queue empty, asking "want production too?"
   //   "production" — running the gloss → word round.
   //   "doneFinal"  — production skipped or finished, show summary.
-  type Phase = "recall" | "promptProd" | "production" | "doneFinal";
-  const [phase, setPhase] = useState<Phase>("recall");
+  type Phase = VocabRecallPhase;
+  const [phase, setPhase] = useState<Phase>(
+    () => restoredSnapshot?.phase ?? "recall",
+  );
   // Cards for the production round = the recall round's reviewed
   // words, looked up against the full workspace vocab pool so the
   // production round has the example sentences, audio cache, and
@@ -191,6 +243,9 @@ function StudyView({ ctx }: StudyViewProps) {
   // Side panels: only one takes the right edge at a time. Pause is a separate
   // fullscreen overlay so the user can step away without losing card state.
   const [paused, setPaused] = useState(false);
+  // Going back is a read-only preview. The card may already have been sent
+  // to FSRS, so previewing it must never submit a second grade.
+  const [previewOnly, setPreviewOnly] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   // Pending Block confirmation. Lives up here with the other useStates
@@ -204,31 +259,20 @@ function StudyView({ ctx }: StudyViewProps) {
   };
   const anyPanelOpen = notesOpen || aiOpen;
 
-  // Pause-aware elapsed time. The session context owns the canonical
-  // clock (we drive ctx.pauseSession / resumeSession below so the
-  // sidebar clock + idle timer freeze), and we mirror the paused spans
-  // locally so the summary + overlay show *active* study time, never the
-  // seconds spent sitting on the pause screen.
-  const pausedMsRef = useRef(0);
-  const pauseStartRef = useRef<number | null>(null);
+  // Use the host-owned active clock for the summary and pause overlay. It
+  // survives plugin switches and also includes pauses triggered from the
+  // sidebar or by an inactive window.
+  const studyPaused = paused || ctx.sessionPaused;
   function elapsedActiveSecs() {
-    const pausedNow =
-      pauseStartRef.current != null ? Date.now() - pauseStartRef.current : 0;
-    const ms = Date.now() - startedAt * 1000 - pausedMsRef.current - pausedNow;
-    return Math.max(0, Math.floor(ms / 1000));
+    return ctx.sessionActiveSecs;
   }
   function doPause() {
-    if (paused) return;
-    pauseStartRef.current = Date.now();
+    if (studyPaused) return;
     setPaused(true);
     ctx.pauseSession();
   }
   function doResume() {
-    if (!paused) return;
-    if (pauseStartRef.current != null) {
-      pausedMsRef.current += Date.now() - pauseStartRef.current;
-      pauseStartRef.current = null;
-    }
+    if (!studyPaused) return;
     setPaused(false);
     ctx.resumeSession();
   }
@@ -260,16 +304,35 @@ function StudyView({ ctx }: StudyViewProps) {
   //   "graded" → Again/Hard/Good/Easy
   // Yes/No answers bias the suggested grade highlight.
   const useTwoQuestions = isTwoQuestionLang && !pinyinMode;
-  type Stage = "word" | "reading" | "graded";
-  const initialStage: Stage = "word";
-  const [stage, setStage] = useState<Stage>(initialStage);
-  const [knewPronunciation, setKnewPronunciation] = useState<boolean | null>(null);
-  const [knewMeaning, setKnewMeaning] = useState<boolean | null>(null);
+  const [stage, setStage] = useState<Stage>(
+    () => restoredSnapshot?.stage ?? initialStage,
+  );
+  const [knewPronunciation, setKnewPronunciation] = useState<boolean | null>(
+    () => restoredSnapshot?.knewPronunciation ?? null,
+  );
+  const [knewMeaning, setKnewMeaning] = useState<boolean | null>(
+    () => restoredSnapshot?.knewMeaning ?? null,
+  );
 
   function resetStages() {
     setStage(initialStage);
     setKnewPronunciation(null);
     setKnewMeaning(null);
+  }
+
+  function goToPreviousCard() {
+    if (idx <= 0) return;
+    setIdx((current) => Math.max(0, current - 1));
+    setPreviewOnly(true);
+    setStage("graded");
+    setKnewPronunciation(null);
+    setKnewMeaning(null);
+  }
+
+  function returnToCurrentCard() {
+    setPreviewOnly(false);
+    setIdx((current) => Math.min(queue.length - 1, current + 1));
+    resetStages();
   }
 
   // Keep the session alive while studying — but never fight a manual
@@ -281,11 +344,40 @@ function StudyView({ ctx }: StudyViewProps) {
   // ensureSessionStarted, which auto-resumes a paused session — so the
   // pause (and the frozen clock) wouldn't stick.
   useEffect(() => {
-    if (paused) return;
-    void ctx.ensureSessionStarted("review");
-  }, [ctx, paused]);
+    if (studyPaused) return;
+    void ctx.ensureSessionStarted("review").then((id) => {
+      if (id != null) setSessionId((previous) => previous ?? id);
+    });
+  }, [ctx, studyPaused]);
 
   const card = queue[idx];
+
+  // English cards may have been imported without a phonetic reading. When a
+  // local dictionary knows one, use it for the study surface without
+  // changing the vocabulary row. This keeps pronunciation data a dictionary
+  // concern and leaves the user's card content untouched.
+  const [dictionaryEntry, setDictionaryEntry] = useState<LookupResult | null>(null);
+  useEffect(() => {
+    setDictionaryEntry(null);
+    if (!card || ctx.workspace.targetLang !== "en") return;
+    let cancelled = false;
+    void lookupDictCached("en", [card.word])
+      .then((rows) => {
+        const hit = rows.get(card.word);
+        if (!cancelled) setDictionaryEntry(hit ? fromDict(hit) : null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [card?.id, card?.word, ctx.workspace.targetLang]);
+  const pronunciation =
+    card?.reading ??
+    (tts.config.englishAccent === "uk"
+      ? dictionaryEntry?.readingUk ?? dictionaryEntry?.readingUs ?? dictionaryEntry?.reading
+      : tts.config.englishAccent === "us"
+        ? dictionaryEntry?.readingUs ?? dictionaryEntry?.readingUk ?? dictionaryEntry?.reading
+        : dictionaryEntry?.readingUs ?? dictionaryEntry?.readingUk ?? dictionaryEntry?.reading);
 
   // First-time presentation ("study before the quiz"). A card that has
   // never been graded (lastReview == null — fresh from the chat tool,
@@ -295,13 +387,55 @@ function StudyView({ ctx }: StudyViewProps) {
   // user has genuinely never seen. Dismissals are tracked per session
   // so an again-requeue doesn't re-present the same card.
   const [introducedIds, setIntroducedIds] = useState<Set<number>>(
-    () => new Set(),
+    () => new Set(restoredSnapshot?.introducedIds ?? []),
   );
   const introShowing =
+    !previewOnly &&
     card != null &&
     stage === "word" &&
     card.lastReview == null &&
     !introducedIds.has(card.id);
+
+  // Keep the main recall flow resumable when the user changes tabs or the
+  // window is closed. FSRS grades are already durable in SQLite; this only
+  // preserves the transient queue, current stage, and session counters.
+  useEffect(() => {
+    if (sessionSize == null || queue.length === 0) return;
+    const snapshot: VocabRecallSnapshot = {
+      version: 1,
+      workspaceId: ctx.workspace.id,
+      mode: "vocab-recall",
+      cardIds: queue.map((card) => card.id),
+      idx,
+      sessionSize,
+      stage,
+      knewPronunciation,
+      knewMeaning,
+      introducedIds: Array.from(introducedIds),
+      phase,
+      reviewedCount,
+      grades,
+      reviewedCards,
+      startedAt,
+      sessionId: sessionId ?? undefined,
+    };
+    saveVocabRecallSnapshot(snapshot);
+  }, [
+    ctx.workspace.id,
+    queue,
+    idx,
+    sessionSize,
+    stage,
+    knewPronunciation,
+    knewMeaning,
+    introducedIds,
+    phase,
+    reviewedCount,
+    grades,
+    reviewedCards,
+    startedAt,
+    sessionId,
+  ]);
 
   function dismissIntro() {
     if (!card) return;
@@ -370,6 +504,37 @@ function StudyView({ ctx }: StudyViewProps) {
     [card?.id, card?.status, card?.stability, card?.lastReview, config.srs],
   );
 
+  // Autoplay uses the same first saved example as the visible card. Keeping
+  // this derived value here means the automatic and manual sentence buttons
+  // never drift apart when an example is generated during the session.
+  const firstExampleText = useMemo(() => {
+    if (!card) return null;
+    const noteSource = cardNotesOverride[card.id] ?? card.cardNotes ?? null;
+    return parseExamples(noteSource)[0]?.target?.trim() || null;
+  }, [card?.id, card?.cardNotes, cardNotesOverride]);
+
+  // Edge TTS is free and sounds better than many installed browser voices,
+  // but its first request has network latency. Warm both pieces while the
+  // learner is looking at the question so reveal playback starts promptly.
+  useEffect(() => {
+    if (sessionSize == null || paused || previewOnly || !card || !config.autoplayAudio) return;
+    const texts = [card.word, firstExampleText].filter(
+      (text): text is string => Boolean(text),
+    );
+    void Promise.all(
+      texts.map((text) => tts.prefetch(text, ctx.workspace.targetLang).catch(() => {})),
+    );
+  }, [
+    card?.id,
+    firstExampleText,
+    sessionSize,
+    paused,
+    previewOnly,
+    config.autoplayAudio,
+    ctx.workspace.targetLang,
+    tts,
+  ]);
+
   // Auto-play TTS the moment the pronunciation is revealed. Normally
   // that's the "reading" stage in CJK two-question mode (when the
   // pinyin first appears) and the "graded" stage everywhere else
@@ -377,14 +542,16 @@ function StudyView({ ctx }: StudyViewProps) {
   // When the user answers No at the first CJK gate we skip "reading"
   // and jump straight to "graded" — fire there too so the "Done
   // studying" reveal still gets audio, otherwise the student never
-  // hears the word for the cards they got wrong.
+  // hears the word for the cards they got wrong. English cards play the
+  // headword and then the first saved example as one cancellable sequence.
+  const autoplayRun = useRef(0);
   useEffect(() => {
     // Don't autoplay until the session is actually running. While the
     // prestart picker is up (`sessionSize == null`) the first card's
     // state is already computed, so without this guard the word would
     // be spoken before the user has even started — and we stay quiet
     // behind the pause overlay too.
-    if (sessionSize == null || paused) return;
+    if (sessionSize == null || paused || previewOnly) return;
     if (!card || !config.autoplayAudio) return;
     // First-time intro is a full reveal too — hearing the word during
     // the presentation is half the point of studying it first.
@@ -395,12 +562,27 @@ function StudyView({ ctx }: StudyViewProps) {
           (stage === "graded" && knewPronunciation === false)
         : stage === "graded");
     if (!isReveal) return;
+    const run = ++autoplayRun.current;
+    let cancelled = false;
     // Route through the TTS context (not speakRaw) so autoplay uses the
     // same provider-key fallback + BCP-47 lang as the manual speak
     // buttons; `silent` keeps it from toasting on every failing card.
-    void tts.speak(card.word, ctx.workspace.targetLang, { silent: true });
+    // Awaiting each call is intentional: word first, then sentence.
+    void (async () => {
+      await tts.speak(card.word, ctx.workspace.targetLang, { silent: true });
+      if (cancelled || run !== autoplayRun.current) return;
+      if (firstExampleText) {
+        await tts.speak(firstExampleText, ctx.workspace.targetLang, { silent: true });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      autoplayRun.current += 1;
+      // A slow network response must not finish over the next card.
+      tts.stop();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card?.id, stage, config.autoplayAudio, useTwoQuestions, sessionSize]);
+  }, [card?.id, stage, config.autoplayAudio, useTwoQuestions, sessionSize, firstExampleText, previewOnly]);
 
   function speakNow() {
     if (!card) return;
@@ -418,14 +600,15 @@ function StudyView({ ctx }: StudyViewProps) {
   }
 
   // Plugin-owned setting: show the small keyboard-hint footer at the
-  // bottom-left of the card surface. Default ON for new users; the
+  // bottom-left of the card surface. Default OFF for a cleaner immersive
+  // card; the
   // toggle lives in Settings → Study → Vocab recall, persisted via
   // `usePluginSetting` so it survives reloads. Read here so the
   // StudyView can render the hint bar conditionally.
   const [showKeyboardHints] = usePluginSetting<boolean>(
     vocabRecall.meta.id,
     "showKeyboardHints",
-    true,
+    false,
   );
 
   // Keyboard shortcuts. Layered so power users can pick the input
@@ -474,7 +657,7 @@ function StudyView({ ctx }: StudyViewProps) {
           openPanel(null);
           return;
         }
-        if (paused) {
+        if (studyPaused) {
           e.preventDefault();
           doResume();
           return;
@@ -487,14 +670,14 @@ function StudyView({ ctx }: StudyViewProps) {
       // those screens' own handlers and Tab-focused buttons rely on.
       if (e.key === " " && card) {
         e.preventDefault();
-        if (paused) doResume();
+        if (studyPaused) doResume();
         else doPause();
         return;
       }
 
       // Card-side shortcuts only fire when no panel is open AND the
       // session isn't paused.
-      if (paused || anyPanelOpen) return;
+      if (studyPaused || anyPanelOpen) return;
       if (!card) return;
 
       const k = e.key.toLowerCase();
@@ -589,18 +772,19 @@ function StudyView({ ctx }: StudyViewProps) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [card?.id, stage, suggestedGrade, paused, notesOpen, aiOpen, introShowing]);
+  }, [card?.id, stage, suggestedGrade, studyPaused, notesOpen, aiOpen, introShowing]);
 
   if (initialQueue.length === 0) {
     return (
       <EmptyQueue
         restudy={ctx.restudyToday}
-        onSessionEnd={() =>
+        onSessionEnd={() => {
+          clearVocabRecallSnapshot(ctx.workspace.id);
           ctx.onSessionEnd({
             cardsReviewed: 0,
             durationSecs: elapsedActiveSecs(),
-          })
-        }
+          });
+        }}
       />
     );
   }
@@ -628,13 +812,15 @@ function StudyView({ ctx }: StudyViewProps) {
   // !card branch so the production-skip toggle in the top bar can
   // also call it (which it does indirectly via the early-return
   // logic below).
-  const finishToSummary = () =>
+  const finishToSummary = () => {
+    clearVocabRecallSnapshot(ctx.workspace.id);
     ctx.onSessionEnd({
       cardsReviewed: reviewedCount,
       durationSecs: elapsedActiveSecs(),
       grades,
       reviewedCards,
     });
+  };
 
   // Auto-finalize when the recall queue is exhausted AND there's
   // nothing else to show (no production round to offer, or it was
@@ -713,6 +899,10 @@ function StudyView({ ctx }: StudyViewProps) {
 
   async function grade(g: Grade) {
     if (!card) return;
+    if (previewOnly) {
+      returnToCurrentCard();
+      return;
+    }
     await ctx.reviewVocab(card.id, g);
     void ctx.bump("words_seen");
     setGrades((p) => ({ ...p, [g]: p[g] + 1 }));
@@ -796,18 +986,21 @@ function StudyView({ ctx }: StudyViewProps) {
 
   return (
     <>
-      <TopActionBar
-        progress={(idx / Math.max(1, queue.length)) * 100}
-        idx={idx}
+          <TopActionBar
+            idx={idx}
         total={queue.length}
         onKnown={() => void actionKnown()}
         onBoost={() => void actionBoost()}
         onBlock={() => setPendingBlock(card)}
         onPause={doPause}
+        onExit={finishToSummary}
+        onBack={goToPreviousCard}
+        canGoBack={idx > 0}
+        readOnly={previewOnly}
       />
       <div
         className={cn(
-          "flex flex-1 px-6 py-6",
+          "flex min-h-0 flex-1 px-4 py-3 sm:px-6 sm:py-4",
           // Hosted/tablet: make the card area a scrollable column so a tall
           // card (long examples + grade buttons) is fully reachable on a
           // short touch viewport; `my-auto` on the card below still centers
@@ -818,31 +1011,29 @@ function StudyView({ ctx }: StudyViewProps) {
             : "items-center justify-center",
         )}
       >
-        <div className={cn("relative w-full max-w-xl", HOSTED && "my-auto")}>
-          {/* Card. Reveal happens in stages — the body widens as we go.
-              On non-CJK languages we skip the "reading" stage since the
-              script is the reading. */}
-          <div className="relative block w-full rounded-2xl border border-border bg-card px-6 py-10 text-center shadow-sm">
-            {/* Manual speaker icon — always visible, never auto-fires.
-                Sits in the top-right of the card so it's reachable
-                without disturbing the focal headword. */}
-            <button
-              type="button"
-              onClick={speakNow}
-              className="absolute right-3 top-3 flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-              aria-label="Play pronunciation"
-              title="Play pronunciation"
-            >
-              <Volume2 className="size-4" />
-            </button>
+          <div
+            className={cn(
+              // Center the whole learning column, while keeping the content
+              // inside it left-aligned like a dictionary entry. The old
+              // ml/mr-auto pairing deliberately anchored this surface to the
+              // left edge, which made wide windows feel accidentally empty.
+              "relative my-auto mx-auto w-full max-w-4xl",
+              HOSTED && "my-auto",
+            )}
+          >
+          {/* The word is intentionally not placed in another large card.
+              The background remains the visual surface, while the example
+              and definition blocks below provide just enough contrast to
+              keep long content readable. */}
+          <div className="relative block w-full px-2 py-8 text-left sm:px-6 sm:py-10">
             {cardImage && (
               <img
                 src={cardImage}
                 alt=""
-                className="mx-auto mb-5 max-h-40 rounded-md object-contain"
+                className="mb-6 max-h-40 rounded-md object-contain"
               />
             )}
-            <div className="font-serif text-7xl tracking-tight leading-none">
+            <div className="min-w-0 max-w-full break-words font-sans text-[clamp(3.75rem,8vw,6.5rem)] font-semibold leading-[0.98] tracking-[-0.045em] text-foreground">
               {card.word}
             </div>
 
@@ -851,22 +1042,67 @@ function StudyView({ ctx }: StudyViewProps) {
                 intro (the whole card is the lesson there). CJK +
                 readingMode=hidden gates it behind the first Yes/No
                 question otherwise. */}
-            {card.reading &&
-              (introShowing || !readingHidden || stage !== "word") && (
-              <div className="mt-4">
-                <Pinyin raw={card.reading} className="text-lg" />
+            <div className="mt-4 flex items-center gap-2">
+              {pronunciation &&
+                (introShowing || !readingHidden || stage !== "word") && (
+                  <>
+                    {ctx.workspace.targetLang === "en" ? (
+                      <span className="text-[15px] tracking-wide text-muted-foreground">
+                        /{pronunciation.replace(/^\/+|\/+$/g, "")}/
+                      </span>
+                    ) : (
+                      <Pinyin raw={pronunciation} className="text-lg" />
+                    )}
+                  </>
+                )}
+              {ctx.workspace.targetLang === "en" && (
+                <SpeakButton
+                  text={card.word}
+                  lang="en"
+                  size="sm"
+                  title="Play English pronunciation"
+                  className="rounded-full border border-border/50 bg-background/20 px-2"
+                />
+              )}
+            </div>
+            {dictionaryEntry?.partOfSpeech && (
+              <div className="mt-3 text-[15px] font-medium text-muted-foreground">
+                {dictionaryEntry.partOfSpeech}
               </div>
             )}
 
             {/* Meaning + extras: shown at the "graded" stage and during
                 the first-time intro reveal. */}
             {(stage === "graded" || introShowing) && (
-              <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
+              <div className="mt-7 space-y-3">
                 {card.gloss && (
-                  <p className="text-[15px] leading-relaxed text-foreground/90">
+                  <p className="text-[17px] leading-relaxed text-foreground/90">
                     {card.gloss.split(/;\s+/).slice(0, 4).join(" · ")}
                   </p>
                 )}
+                {dictionaryEntry?.definitionEn && (
+                  <p className="max-w-3xl text-[13px] italic leading-relaxed text-muted-foreground">
+                    {dictionaryEntry.definitionEn}
+                  </p>
+                )}
+                {dictionaryEntry?.examples && dictionaryEntry.examples.length > 0 && (
+                  <div className="max-w-3xl rounded-2xl border border-border/30 bg-background/20 px-4 py-3 backdrop-blur-sm">
+                    <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Dictionary example
+                    </p>
+                    <p className="text-[15px] leading-7 text-foreground/90">
+                      {dictionaryEntry.examples[0].target}
+                    </p>
+                    {dictionaryEntry.examples[0].native && (
+                      <p className="mt-1 text-[13px] leading-6 text-muted-foreground">
+                        {dictionaryEntry.examples[0].native}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <MorphologyPanel
+                  notes={cardNotesOverride[card.id] ?? card.cardNotes}
+                />
                 {config.showExamples && (
                   <ExampleSection
                     card={card}
@@ -881,15 +1117,6 @@ function StudyView({ ctx }: StudyViewProps) {
                     }
                   />
                 )}
-                <div className="flex justify-center">
-                  <SpeakButton
-                    text={card.word}
-                    lang={ctx.workspace.targetLang}
-                    size="sm"
-                    vocabId={card.id}
-                    cachedAudioAvailable={card.hasAudio}
-                  />
-                </div>
               </div>
             )}
           </div>
@@ -897,21 +1124,28 @@ function StudyView({ ctx }: StudyViewProps) {
           {/* First-time intro controls — replace the gate until the
               user has actually studied the card once. */}
           {introShowing && (
-            <div className="mt-5 flex flex-col items-center gap-2.5">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-500/40 bg-sky-500/10 px-2.5 py-0.5 text-[10.5px] font-medium uppercase tracking-wider text-sky-700 dark:text-sky-400">
-                <Sparkles className="size-3" />
-                New word — study it first
-              </span>
+              <div className="mt-8 flex justify-center px-2">
               <Button
                 size="lg"
                 onClick={dismissIntro}
                 className="rounded-full px-8"
               >
-                Got it — next card
+                Next card <ArrowRight className="size-4" />
               </Button>
-              <p className="text-center text-[11px] text-muted-foreground">
-                Take in the reading, meaning, and audio · we&apos;ll quiz
-                your recall a few cards from now · Enter / →
+            </div>
+          )}
+
+          {previewOnly && (
+            <div className="mt-8 flex flex-col items-center gap-2 text-center">
+              <Button
+                size="lg"
+                onClick={returnToCurrentCard}
+                className="rounded-full px-8"
+              >
+                Return to current card <ArrowRight className="size-4" />
+              </Button>
+              <p className="text-[11px] text-muted-foreground">
+                Preview only — this card will not be graded again.
               </p>
             </div>
           )}
@@ -919,7 +1153,7 @@ function StudyView({ ctx }: StudyViewProps) {
           {/* Stage controls. CJK: word→Yes/No (pronunciation) →
               reading→Yes/No (meaning) → graded. Non-CJK: word→Yes/No
               (meaning) → graded. */}
-          {stage === "word" && !introShowing && (
+          {stage === "word" && !introShowing && !previewOnly && (
             <YesNoGate
               question={
                 useTwoQuestions
@@ -931,7 +1165,7 @@ function StudyView({ ctx }: StudyViewProps) {
               hint={`yes: → / l / y / 1   ·   no: ← / h / 2   ·   status: ${card.status}`}
             />
           )}
-          {stage === "reading" && (
+          {stage === "reading" && !previewOnly && (
             <YesNoGate
               question="Do you know what it means?"
               onYes={() => answerGate(true)}
@@ -940,7 +1174,7 @@ function StudyView({ ctx }: StudyViewProps) {
             />
           )}
 
-          {stage === "graded" && cameFromNo && (
+          {stage === "graded" && cameFromNo && !previewOnly && (
             // "I said No" path — the reveal panel above already
             // shows the full answer (reading + meaning). One big
             // "Done — next card" button records the lapse as
@@ -958,14 +1192,9 @@ function StudyView({ ctx }: StudyViewProps) {
               >
                 Done studying — next card
               </Button>
-              <p className="text-center text-[11px] text-muted-foreground">
-                Marks the card as <em>again</em> so it surfaces a few
-                cards later · 2 / 3 / 4 to upgrade to Hard / Good /
-                Easy if you actually knew it
-              </p>
             </div>
           )}
-          {stage === "graded" && !cameFromNo && (
+          {stage === "graded" && !cameFromNo && !previewOnly && (
             <>
               <GradeRow
                 className="mt-5"
@@ -973,15 +1202,6 @@ function StudyView({ ctx }: StudyViewProps) {
                 suggested={suggestedGrade}
                 hints={intervalHints}
               />
-              <p className="mt-3 text-center text-[11px] text-muted-foreground">
-                Enter accepts the suggested grade · 1 / 2 / 3 / 4 to grade
-                {config.autoplayAudio && (
-                  <>
-                    {" · "}
-                    <Volume2 className="inline size-3" /> auto-play on reveal
-                  </>
-                )}
-              </p>
             </>
           )}
         </div>
@@ -993,8 +1213,9 @@ function StudyView({ ctx }: StudyViewProps) {
           play audio, ask the AI, take notes. Pause and the destructive
           card actions live in the top bar — those are decisions about
           the queue, not about the card body. */}
-      <SideRail
-        onSpeak={speakNow}
+       <SideRail
+         onSpeak={speakNow}
+         showSpeak={false}
         onNotes={() => openPanel("notes")}
         onAi={() => openPanel("ai")}
         notesOpen={notesOpen}
@@ -1082,7 +1303,7 @@ function StudyView({ ctx }: StudyViewProps) {
           current card is untouched and resumes where it left off. End
           Session ships the partial stats to the host so the summary
           screen still gets accurate numbers. */}
-      {paused && (
+      {studyPaused && (
         <PauseOverlay
           progress={(idx / Math.max(1, queue.length)) * 100}
           reviewedCount={reviewedCount}
@@ -1090,17 +1311,97 @@ function StudyView({ ctx }: StudyViewProps) {
           grades={grades}
           activeSecs={elapsedActiveSecs()}
           onResume={doResume}
-          onEnd={() =>
+          onEnd={() => {
+            clearVocabRecallSnapshot(ctx.workspace.id);
             ctx.onSessionEnd({
               cardsReviewed: reviewedCount,
               durationSecs: elapsedActiveSecs(),
               grades,
               reviewedCards,
-            })
-          }
+            });
+          }}
         />
       )}
     </>
+  );
+}
+
+
+function MorphologyPanel({
+  notes,
+}: {
+  notes: string | null | undefined;
+}) {
+  const morphology = parseMorphology(notes);
+  if (!morphology) return null;
+  const rows = [
+    ["词根", morphology.root],
+    ["构词组成", morphology.components?.join(" + ")],
+    ["前缀", morphology.prefixes?.join(" · ")],
+    ["后缀", morphology.suffixes?.join(" · ")],
+    ["词族", morphology.family?.join(" · ")],
+  ].filter(([, value]) => value);
+  if (
+    rows.length === 0 &&
+    !morphology.note &&
+    (!morphology.dictionaryAffixes || morphology.dictionaryAffixes.length === 0)
+  ) {
+    return null;
+  }
+  return (
+    <div className="rounded-lg border border-border/50 bg-muted/20 px-3 py-2 text-left text-[12px] leading-relaxed">
+      <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        {morphology.source === "ai"
+          ? "构词提示 · 本地 AI（非词典词源）"
+          : "Word formation"}
+      </div>
+      {morphology.source === "ai" && morphology.confidence && (
+        <div className="mb-1 text-[10px] text-muted-foreground/80">
+          可信度：{morphology.confidence === "high" ? "高" : morphology.confidence === "medium" ? "中" : "低"}
+        </div>
+      )}
+      {rows.map(([label, value]) => (
+        <div key={label} className="flex gap-2">
+          <span className="shrink-0 text-muted-foreground">{label}</span>
+          <span className="min-w-0 break-words text-foreground/90">{value}</span>
+        </div>
+      ))}
+      {morphology.note && (
+        <p className="mt-1 text-muted-foreground">{morphology.note}</p>
+      )}
+      {morphology.dictionaryAffixes && morphology.dictionaryAffixes.length > 0 && (
+        <div className="mt-2 border-t border-border/40 pt-2">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Collins 词缀参考
+          </div>
+          <div className="space-y-1.5">
+            {morphology.dictionaryAffixes.map((entry) => (
+              <div key={`${entry.type}:${entry.affix}`} className="space-y-0.5">
+                <div className="flex gap-2">
+                  <span className="shrink-0 font-medium text-foreground/90">
+                    {entry.affix}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {entry.type === "prefix" ? "前缀" : "后缀"}
+                  </span>
+                  {entry.meaningZh && (
+                    <span className="min-w-0 break-words text-foreground/90">
+                      {entry.meaningZh}
+                    </span>
+                  )}
+                </div>
+                {entry.definitionEn && (
+                  <div className="break-words text-muted-foreground">{entry.definitionEn}</div>
+                )}
+                {entry.exampleEn && (
+                  <div className="break-words text-muted-foreground/80">{entry.exampleEn}</div>
+                )}
+              </div>
+            ))}
+          </div>
+      </div>
+      )}
+    </div>
   );
 }
 
@@ -1135,12 +1436,11 @@ function ExampleSection({
   // alongside the structured examples so the user doesn't lose
   // anything they handwrote.
   const legacyNote = useMemo(() => {
-    const raw = (notesOverride ?? "").trim();
-    if (!raw || raw.startsWith("TOKORI_EXAMPLES_V1")) return "";
-    return raw;
+    return legacyNotesRemainder(notesOverride);
   }, [notesOverride]);
   const [pickedIdx, setPickedIdx] = useState<number>(-1);
   const [busy, setBusy] = useState(false);
+  const [translating, setTranslating] = useState(false);
   // Generation mode — three-way toggle to mirror sentence-mining's
   // setup screen:
   //   - "k"     : strict — only known vocab + target. Pure
@@ -1153,6 +1453,7 @@ function ExampleSection({
   // same mode card-to-card and persisting this would be invisible
   // global state.
   const [aiMode, setAiMode] = useState<"k" | "k+1" | "plain">("k+1");
+  const [toolsOpen, setToolsOpen] = useState(false);
 
   // Re-roll the picked example whenever the card or example list
   // changes. This keeps the same sentence stable across re-renders of
@@ -1172,6 +1473,49 @@ function ExampleSection({
     let next = pickedIdx;
     while (next === pickedIdx) next = Math.floor(Math.random() * examples.length);
     setPickedIdx(next);
+  }
+
+  async function translateExample() {
+    if (!example) return;
+    if (!provider) {
+      toast.error("Configure a provider in Settings → Providers to translate examples.");
+      return;
+    }
+    setTranslating(true);
+    try {
+      const native = languageName(nativeLang as LanguageCode);
+      const reply = await sendChat({
+        messages: [
+          {
+            role: "system",
+            content:
+              `Translate technical English into concise, natural ${native}. ` +
+              `Return JSON only in the form {"native":"..."}. Preserve the exact meaning; ` +
+              `do not add explanations or alternate translations.`,
+          },
+          { role: "user", content: example.target },
+        ],
+        onToken: () => {},
+      });
+      const nativeText = parseTranslationReply(reply);
+      if (!nativeText) throw new Error("The model did not return a usable translation.");
+      const next = examples.map((e) =>
+        e.id === example.id ? { ...e, native: nativeText } : e,
+      );
+      const serialised = serialiseExamplesWithMorphology(
+        next,
+        parseMorphology(notesOverride),
+      );
+      onNotesChange(serialised);
+      await updateVocabFields({ id: card.id, cardNotes: serialised });
+      toast.success("Sentence translation saved");
+    } catch (err) {
+      toast.error("Translation failed", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setTranslating(false);
+    }
   }
 
   async function generate() {
@@ -1265,14 +1609,18 @@ function ExampleSection({
         source: "ai",
       };
       const next = [...examples, fresh];
-      const serialised = serialiseExamples(next);
+      const serialised = serialiseExamplesWithMorphology(
+        next,
+        parseMorphology(notesOverride),
+      );
+      const persistedExamples = parseExamples(serialised);
       onNotesChange(serialised);
       // Persist in the background — don't make the user wait. If it
       // fails the in-memory override still shows the new sentence; the
       // worst case is the next card refresh loses it.
       void updateVocabFields({ id: card.id, cardNotes: serialised }).catch(() => {});
       // Surface the new one immediately.
-      setPickedIdx(next.length - 1);
+      setPickedIdx(Math.max(0, persistedExamples.length - 1));
     } catch (err) {
       toast.error("Generation failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -1285,96 +1633,117 @@ function ExampleSection({
   return (
     <div className="mt-3 space-y-2 text-left">
       {example ? (
-        <div className="rounded-lg border border-border/50 bg-card/40 px-3 py-2">
-          <div className="text-[13px] leading-relaxed">
-            <Tokenized text={example.target} lang={targetLang as LanguageCode} />
+        <div className="min-w-0 rounded-2xl border border-border/50 bg-background/25 px-4 py-3 backdrop-blur-sm">
+          <div className="flex min-w-0 items-start gap-1.5">
+            <div className="min-w-0 flex-1 break-words text-[16px] leading-8 text-foreground/95 sm:text-[18px]">
+              <Tokenized text={example.target} lang={targetLang as LanguageCode} decoration="subtle" />
+            </div>
+            <SpeakButton
+              text={example.target}
+              lang={targetLang}
+              size="xs"
+              title="Play example sentence"
+              className="shrink-0"
+            />
           </div>
-          {example.native && (
-            <div className="mt-1.5 text-[11.5px] text-muted-foreground">
-              {/* Local-only blur — the answer card is a moment of
-                  self-testing, so the translation always starts hidden
-                  regardless of the global `showTranslations` toggle.
-                  Keyed on the example id so a freshly-generated
-                  sentence resets to blurred even if the prior one was
-                  revealed mid-card. */}
-              <BlurReveal
-                key={example.id}
-                text={example.native}
-                hiddenTitle="Click to reveal translation"
-              />
+          {example.native?.trim() ? (
+            <p className="mt-2 text-[14px] leading-7 text-muted-foreground">{example.native}</p>
+          ) : (
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
+              <span>No Chinese translation yet.</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void translateExample()}
+                disabled={translating || !provider}
+                className="h-6 px-2 text-[11px]"
+                title={!provider ? "Configure a provider in Settings → Providers" : undefined}
+              >
+                {translating ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                Translate
+              </Button>
             </div>
           )}
         </div>
       ) : (
-        <p className="text-[11.5px] text-muted-foreground">
-          No example sentences yet. Generate one to start.
-        </p>
+        <p className="text-[11.5px] text-muted-foreground">No example sentences yet. Generate one to start.</p>
       )}
-      {legacyNote && (
-        <p className="whitespace-pre-line text-[11.5px] leading-relaxed text-muted-foreground/80">
-          {legacyNote}
-        </p>
-      )}
-      <div className="flex items-center justify-center gap-1.5">
-        {examples.length > 1 && (
+
+      {legacyNote ? (
+        <p className="whitespace-pre-line text-[11.5px] leading-relaxed text-muted-foreground/80">{legacyNote}</p>
+      ) : null}
+
+      <div className="flex justify-end">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setToolsOpen((open) => !open)}
+          className="size-7 text-muted-foreground/70"
+          title="Sentence tools"
+        >
+          <MoreHorizontal className="size-4" />
+        </Button>
+      </div>
+
+      {toolsOpen ? (
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {examples.length > 1 ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={shuffle}
+              className="h-7 px-2 text-[11px]"
+              title="Show a different saved example"
+            >
+              <RotateCcw className="size-3" />
+              Another
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="sm"
-            onClick={shuffle}
+            onClick={generate}
+            disabled={busy || !provider}
             className="h-7 px-2 text-[11px]"
-            title="Show a different saved example"
+            title={
+              !provider
+                ? "Configure a provider in Settings → Providers"
+                : aiMode === "k"
+                  ? "Generate using ONLY words you already know"
+                  : aiMode === "k+1"
+                    ? "Generate using your known vocab + ~1 new word"
+                    : "Generate without vocab gating (intermediate prose)"
+            }
           >
-            <RotateCcw className="size-3" />
-            Another
+            {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+            Generate
           </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={generate}
-          disabled={busy || !provider}
-          className="h-7 px-2 text-[11px]"
-          title={
-            !provider
-              ? "Configure a provider in Settings → Providers"
-              : aiMode === "k"
-                ? "Generate using ONLY words you already know"
-                : aiMode === "k+1"
-                  ? "Generate using your known vocab + ~1 new word"
-                  : "Generate without vocab gating (intermediate prose)"
-          }
-        >
-          {busy ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
-          Generate
-        </Button>
-        {/* Three-way segmented control. Same difficulty axis the
-            sentence-mining setup screen exposes, just inline + tiny
-            since the answer card has no room for descriptions. */}
-        <div className="flex items-center gap-0 rounded-md border border-border/60 p-0.5">
-          {(["k", "k+1", "plain"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setAiMode(m)}
-              className={cn(
-                "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors",
-                aiMode === m
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-              )}
-              title={
-                m === "k"
-                  ? "k — strict, only words you know"
-                  : m === "k+1"
-                    ? "k+1 — your vocab + ~1 new word"
-                    : "plain — no vocab gating"
-              }
-            >
-              {m}
-            </button>
-          ))}
+          <div className="flex items-center gap-0 rounded-md border border-border/60 p-0.5">
+            {(["k", "k+1", "plain"] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setAiMode(m)}
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors",
+                  aiMode === m
+                    ? "bg-foreground text-background"
+                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                )}
+                title={
+                  m === "k"
+                    ? "k — strict, only words you know"
+                    : m === "k+1"
+                      ? "k+1 — your vocab + ~1 new word"
+                      : "plain — no vocab gating"
+                }
+              >
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -1441,6 +1810,28 @@ function tryParseJsonArray(raw: string): { target?: string; native?: string }[] 
   }
 
   return null;
+}
+
+function parseTranslationReply(raw: string): string | null {
+  const cleaned = raw
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```(?:json)?\s*/gi, "")
+    .replace(/```/g, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(cleaned.slice(start, end + 1)) as { native?: unknown };
+      if (typeof parsed.native === "string" && parsed.native.trim()) {
+        return parsed.native.trim();
+      }
+    } catch {
+      /* fall through to a conservative plain-text fallback */
+    }
+  }
+  const plain = cleaned.replace(/^translation\s*:\s*/i, "").trim();
+  return plain && !plain.includes("{") ? plain : null;
 }
 
 function EmptyQueue({
@@ -1667,7 +2058,7 @@ function ProductionRound({
   const [showKeyboardHints] = usePluginSetting<boolean>(
     vocabRecall.meta.id,
     "showKeyboardHints",
-    true,
+    false,
   );
 
   // First example sentence (if any). The audio key (↓/j) plays it.
@@ -1833,13 +2224,13 @@ function ProductionRound({
     <div className="flex h-full flex-col">
       {/* Slim progress bar — mirrors the recall round's TopActionBar
           chrome so the visual rhythm doesn't change between phases. */}
-      <div className="border-b border-border px-6 pt-2 pb-3">
+      <div className="px-4 pb-2 pt-3 sm:px-6">
         <div className="flex w-full items-center gap-4">
-          <p className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+          <p className="shrink-0 rounded-full bg-background/25 px-2.5 py-1 text-[11px] tabular-nums text-muted-foreground backdrop-blur-sm">
             {idx + 1} / {total}
           </p>
           <div className="flex-1">
-            <Progress value={progress} />
+            <Progress value={progress} className="h-1 bg-foreground/10" />
           </div>
           <span className="rounded-full border border-border px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
             Production
@@ -2009,62 +2400,117 @@ function ProductionKeyboardHints({ knewWord }: { knewWord: boolean | null }) {
 }
 
 function TopActionBar({
-  progress,
   idx,
   total,
   onKnown,
   onBoost,
   onBlock,
   onPause,
+  onExit,
+  onBack,
+  canGoBack,
+  readOnly,
 }: {
-  progress: number;
   idx: number;
   total: number;
   onKnown: () => void;
   onBoost: () => void;
   onBlock: () => void;
   onPause: () => void;
+  onExit: () => void;
+  onBack: () => void;
+  canGoBack: boolean;
+  readOnly: boolean;
 }) {
+  const [moreOpen, setMoreOpen] = useState(false);
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="border-b border-border px-6 pt-2 pb-3">
-        <div className="flex w-full items-center gap-4">
-          <p className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+      <div className="pointer-events-auto absolute inset-x-0 top-0 z-20 flex justify-between px-4 pt-3 opacity-80 transition-opacity hover:opacity-100 focus-within:opacity-100 sm:px-6">
+        <div className="flex items-center gap-1 rounded-full border border-border/40 bg-background/35 px-2 py-1 backdrop-blur-md">
+          <TopActionButton onClick={onExit} tooltip="Exit session">
+            <ArrowLeft className="size-4" />
+          </TopActionButton>
+          <TopActionButton
+            onClick={onBack}
+            tooltip={canGoBack ? "Previous card" : "No previous card"}
+            disabled={!canGoBack}
+          >
+            <ChevronLeft className="size-4" />
+          </TopActionButton>
+          <p className="shrink-0 rounded-full px-1 text-[11px] tabular-nums text-muted-foreground">
             {idx + 1} / {total}
           </p>
-          <div className="flex-1">
-            <Progress value={progress} />
-          </div>
-          <div className="flex items-center gap-1">
+        </div>
+        <div className="flex items-center gap-1 rounded-full border border-border/40 bg-background/35 px-2 py-1 backdrop-blur-md">
+          <TopActionButton onClick={onPause} tooltip="Pause  ·  Space">
+            <Pause className="size-4" />
+          </TopActionButton>
+          <div className="relative">
             <TopActionButton
-              onClick={onKnown}
-              tooltip="Mark as known — skip future reviews."
-              className="text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+              onClick={() => setMoreOpen((open) => !open)}
+              tooltip="More actions"
             >
-              <CheckCircle2 className="size-4" />
+              <MoreHorizontal className="size-4" />
             </TopActionButton>
-            <TopActionButton
-              onClick={onBoost}
-              tooltip="Boost — re-study this card later in the same session."
-              className="text-amber-600 hover:bg-amber-500/10 dark:text-amber-400"
-            >
-              <RocketIcon className="size-4" />
-            </TopActionButton>
-            <TopActionButton
-              onClick={onBlock}
-              tooltip="Block — remove this word so it never surfaces again."
-              className="text-rose-600 hover:bg-rose-500/10 dark:text-rose-400"
-            >
-              <Ban className="size-4" />
-            </TopActionButton>
-            <div className="mx-1 h-5 w-px bg-border" />
-            <TopActionButton onClick={onPause} tooltip="Pause  ·  Space">
-              <Pause className="size-4" />
-            </TopActionButton>
+            {moreOpen && (
+              <div className="absolute right-0 top-9 min-w-44 rounded-xl border border-border/60 bg-background/95 p-1.5 text-left shadow-lg backdrop-blur-md">
+                <MoreAction
+                  onClick={() => {
+                    setMoreOpen(false);
+                    onKnown();
+                  }}
+                  disabled={readOnly}
+                  icon={<CheckCircle2 className="size-3.5" />}
+                  label="Mark as known"
+                />
+                <MoreAction
+                  onClick={() => {
+                    setMoreOpen(false);
+                    onBoost();
+                  }}
+                  disabled={readOnly}
+                  icon={<RocketIcon className="size-3.5" />}
+                  label="Study again soon"
+                />
+                <MoreAction
+                  onClick={() => {
+                    setMoreOpen(false);
+                    onBlock();
+                  }}
+                  disabled={readOnly}
+                  icon={<Ban className="size-3.5" />}
+                  label="Block word"
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+function MoreAction({
+  onClick,
+  disabled,
+  icon,
+  label,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+    >
+      {icon}
+      {label}
+    </button>
   );
 }
 
@@ -2073,11 +2519,13 @@ function TopActionButton({
   onClick,
   tooltip,
   className,
+  disabled = false,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   tooltip: string;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
     <Tooltip>
@@ -2085,8 +2533,9 @@ function TopActionButton({
         <button
           type="button"
           onClick={onClick}
+          disabled={disabled}
           className={cn(
-            "flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+            "flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-30",
             className,
           )}
         >
@@ -2245,7 +2694,7 @@ function VocabRecallSettings() {
     usePluginSetting<boolean>(
       vocabRecall.meta.id,
       "showKeyboardHints",
-      true,
+      false,
     );
   return (
     <div className="space-y-3">

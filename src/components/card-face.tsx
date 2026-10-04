@@ -86,11 +86,12 @@ export function CardFace({
       ? maskCloze(card.frontExtra)
       : revealCloze(card.frontExtra)
     : card.word;
+  const isSentence = card.kind === "sentence";
 
   return (
     <div
       className={cn(
-        "flex flex-col items-center gap-2 text-center",
+        "flex min-w-0 max-w-full flex-col items-center gap-2 text-center",
         className,
       )}
     >
@@ -102,8 +103,14 @@ export function CardFace({
               <div
                 key={key}
                 className={cn(
-                  "font-serif tracking-tight",
-                  size === "lg" ? "text-4xl" : "text-2xl",
+                  "max-w-full break-words leading-tight tracking-tight [overflow-wrap:anywhere]",
+                  size === "lg"
+                    ? isSentence
+                      ? "max-h-24 overflow-y-auto font-sans text-sm leading-relaxed text-muted-foreground"
+                      : "max-h-40 overflow-y-auto text-4xl"
+                    : isSentence
+                      ? "font-sans text-xs leading-relaxed text-muted-foreground"
+                      : "text-2xl",
                 )}
               >
                 {wordText}
@@ -122,8 +129,14 @@ export function CardFace({
               <div
                 key={key}
                 className={cn(
-                  "max-w-prose text-muted-foreground",
-                  size === "lg" ? "text-base" : "text-[13.5px]",
+                  "max-w-full break-words text-muted-foreground",
+                  size === "lg"
+                    ? isSentence
+                      ? "font-sans text-lg leading-relaxed text-foreground"
+                      : "text-base"
+                    : isSentence
+                      ? "font-sans text-sm leading-relaxed text-foreground"
+                      : "text-[13.5px]",
                 )}
               >
                 <GlossList gloss={card.gloss} inline />
@@ -134,7 +147,7 @@ export function CardFace({
               <div
                 key={key}
                 className={cn(
-                  "max-w-prose",
+                  "max-w-full break-words",
                   size === "lg" ? "text-base" : "text-[13.5px]",
                 )}
               >
@@ -146,7 +159,7 @@ export function CardFace({
               <p
                 key={key}
                 className={cn(
-                  "max-w-prose italic text-muted-foreground",
+                  "max-w-full break-words italic text-muted-foreground",
                   size === "lg" ? "text-sm" : "text-xs",
                 )}
               >

@@ -68,11 +68,18 @@ export function useActiveSessionTime(paused: boolean): () => number {
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", onVisibility);
     }
+    // A window can lose focus while the document remains "visible"
+    // (alt-tab, another window over it, the OS lock screen). Treat that as
+    // inactive too so local summary clocks match the canonical session clock.
+    window.addEventListener("blur", flush);
+    window.addEventListener("focus", onVisibility);
     return () => {
       flush();
       if (typeof document !== "undefined") {
         document.removeEventListener("visibilitychange", onVisibility);
       }
+      window.removeEventListener("blur", flush);
+      window.removeEventListener("focus", onVisibility);
     };
   }, [paused]);
 

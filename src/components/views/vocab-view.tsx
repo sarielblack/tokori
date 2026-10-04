@@ -912,26 +912,42 @@ export function VocabView() {
             </div>
           ) : (
             <ul className="grid gap-2 sm:grid-cols-2">
-              {visible.map((e) => (
+              {visible.map((e) => {
+                const isSentence = e.kind === "sentence";
+                const primaryText = isSentence ? e.gloss ?? e.word : e.word;
+                const secondaryText = isSentence ? e.word : e.gloss;
+                return (
                 <li
                   key={e.id}
                   className="group flex items-start justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3 transition-shadow hover:shadow-sm"
                 >
                   <button
                     type="button"
-                    onClick={() => openInDictionary(e.word)}
+                    onClick={() => openInDictionary(primaryText)}
                     className="min-w-0 flex-1 cursor-pointer text-left"
-                    title="Open in dictionary"
+                    title={isSentence ? "Open the English sentence" : "Open in dictionary"}
                   >
                     <div className="flex items-baseline gap-2">
-                      <span className="font-serif text-2xl group-hover:underline">
-                        {e.word}
+                      <span
+                        className={cn(
+                          "min-w-0 max-w-full break-words group-hover:underline",
+                          isSentence
+                            ? "text-[15px] font-medium leading-relaxed"
+                            : "font-serif text-2xl leading-tight",
+                        )}
+                      >
+                        {primaryText}
                       </span>
-                      <Pinyin raw={e.reading} className="text-[13px]" />
+                      {!isSentence && <Pinyin raw={e.reading} className="text-[13px]" />}
                     </div>
-                    {e.gloss && (
-                      <p className="mt-1 line-clamp-2 text-[13px] text-muted-foreground">
-                        {e.gloss}
+                    {secondaryText && (
+                      <p
+                        className={cn(
+                          "mt-1 line-clamp-2 text-muted-foreground",
+                          isSentence ? "text-[12px] leading-relaxed" : "text-[13px]",
+                        )}
+                      >
+                        {isSentence ? `场景 / 意图：${secondaryText}` : secondaryText}
                       </p>
                     )}
                     <div className="mt-2 flex items-center gap-2">
@@ -968,15 +984,15 @@ export function VocabView() {
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      title="Open in dictionary"
-                      onClick={() => openInDictionary(e.word)}
+                      title={isSentence ? "Open the English sentence" : "Open in dictionary"}
+                      onClick={() => openInDictionary(primaryText)}
                     >
                       <BookOpen className="size-4" />
                     </Button>
                     <PushToAnkiButton
-                      word={e.word}
+                      word={primaryText}
                       reading={e.reading}
-                      gloss={e.gloss}
+                      gloss={isSentence ? e.translation ?? secondaryText : secondaryText}
                       size="icon-sm"
                       variant="ghost"
                     />
@@ -991,7 +1007,8 @@ export function VocabView() {
                     </Button>
                   </div>
                 </li>
-              ))}
+                );
+              })}
             </ul>
           )}
 
@@ -1111,13 +1128,18 @@ function FlashCard({
   onOpenInDictionary: () => void;
 }) {
   const [flipped, setFlipped] = useState(false);
+  // Sentence imports use `word` for the Chinese scene/intent and `gloss`
+  // for the English target sentence. The browse prompt should train recall
+  // from the sentence itself, not display the Chinese prompt in giant type.
+  const isSentence = entry.kind === "sentence";
+  const frontText = isSentence ? entry.gloss ?? entry.word : entry.word;
   return (
     <div className="group relative aspect-[4/3]">
       <div
         role="button"
         tabIndex={0}
         aria-pressed={flipped}
-        aria-label={`${entry.word} — flip card`}
+            aria-label={`${frontText} — flip card`}
         onClick={() => setFlipped((f) => !f)}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -1142,8 +1164,17 @@ function FlashCard({
             pointerEvents: flipped ? "none" : "auto",
           }}
         >
-          <div className="font-serif text-6xl tracking-tight leading-none">
-            {entry.word}
+          <div className="min-w-0 max-w-full px-2 text-center">
+            <div
+              className={cn(
+                "max-w-full break-words",
+                isSentence
+                  ? "max-h-[9.5rem] overflow-y-auto px-1 text-[clamp(1.05rem,1.7vw,1.55rem)] font-medium leading-relaxed"
+                  : "max-h-[8.5rem] overflow-hidden font-serif text-[clamp(2rem,5vw,3.75rem)] leading-tight tracking-tight",
+              )}
+            >
+              {frontText}
+            </div>
           </div>
           <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between text-[10.5px]">
             {(() => {
@@ -1172,13 +1203,33 @@ function FlashCard({
             pointerEvents: flipped ? "auto" : "none",
           }}
         >
-          <div className="flex items-baseline gap-2">
-            <span className="font-serif text-2xl">{entry.word}</span>
-            {entry.reading && <Pinyin raw={entry.reading} className="text-sm" />}
-          </div>
-          <p className="line-clamp-4 flex-1 overflow-hidden text-[13.5px] leading-relaxed text-foreground/90">
-            {entry.gloss ?? "—"}
-          </p>
+          {isSentence ? (
+            <>
+              <p className="line-clamp-3 text-[12px] leading-relaxed text-muted-foreground">
+                场景 / 意图：{entry.word}
+              </p>
+              {entry.translation && (
+                <p className="line-clamp-3 text-[13px] leading-relaxed text-foreground/90">
+                  {entry.translation}
+                </p>
+              )}
+              <p className="line-clamp-4 flex-1 overflow-hidden text-[14px] leading-relaxed text-foreground/90">
+                {entry.gloss ?? "—"}
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="min-w-0 max-w-full break-words font-serif text-2xl leading-tight">
+                  {entry.word}
+                </span>
+                {entry.reading && <Pinyin raw={entry.reading} className="shrink-0 text-sm" />}
+              </div>
+              <p className="line-clamp-4 flex-1 overflow-hidden text-[13.5px] leading-relaxed text-foreground/90">
+                {entry.gloss ?? "—"}
+              </p>
+            </>
+          )}
           <div className="flex items-center justify-between text-[10.5px] text-muted-foreground">
             <span>
               {entry.source === "chat"

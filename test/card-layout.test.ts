@@ -16,10 +16,10 @@ describe("card-layout — defaultLayoutForKind", () => {
       back: ["reading", "definition"],
     });
   });
-  it("puts translation first on sentence cards", () => {
+  it("puts the target sentence on the front of sentence cards", () => {
     expect(defaultLayoutForKind("sentence")).toEqual({
-      front: ["word"],
-      back: ["translation", "definition"],
+      front: ["definition"],
+      back: ["translation", "word"],
     });
   });
   it("flips to production-direction for writing cards", () => {

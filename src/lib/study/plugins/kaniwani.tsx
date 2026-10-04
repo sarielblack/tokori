@@ -443,7 +443,22 @@ function StudyView({ ctx }: StudyViewProps) {
   // is visible AND we're not paused. Used for the duration we ship
   // to the session-summary screen so a user who left the app sitting
   // open for an hour doesn't get an inflated time.
-  const getActiveSecs = useActiveSessionTime(paused);
+  const studyPaused = paused || ctx.sessionPaused;
+  const getActiveSecs = useActiveSessionTime(studyPaused);
+
+  // Keep the plugin overlay and the host session lifecycle together. The
+  // previous handlers only changed local React state, leaving the canonical
+  // timer running and making Resume appear inert in some flows.
+  function doPause() {
+    if (studyPaused) return;
+    setPaused(true);
+    ctx.pauseSession();
+  }
+  function doResume() {
+    if (!studyPaused) return;
+    setPaused(false);
+    ctx.resumeSession();
+  }
   // O(1) card-by-id lookup so we don't scan the queue per render.
   const cardsById = useMemo(() => {
     const m = new Map<number, VocabEntry>();
@@ -452,9 +467,9 @@ function StudyView({ ctx }: StudyViewProps) {
   }, [queue]);
 
   useEffect(() => {
-    if (!started) return;
+    if (!started || studyPaused) return;
     void ctx.ensureSessionStarted("review");
-  }, [ctx, started]);
+  }, [ctx, started, studyPaused]);
 
   // Persist the in-progress snapshot on every state-change tick.
   // Cheap (single localStorage write), already keyed per
@@ -954,7 +969,7 @@ function StudyView({ ctx }: StudyViewProps) {
             <SessionTopBarControls
               onBoost={actionBoost}
               onNeverAgain={startNeverAgain}
-              onPause={() => setPaused(true)}
+              onPause={doPause}
               disableBoost={!card}
             />
           </div>
@@ -1185,13 +1200,13 @@ function StudyView({ ctx }: StudyViewProps) {
           End ships partial stats so the session-summary screen still
           gets accurate numbers. Active-time tracking is paused while
           this is up (see the visibility-aware accumulator above). */}
-      {paused && (
+      {studyPaused && (
         <PauseOverlay
           progress={progressPct}
           done={done}
           total={total}
           elapsedSecs={getActiveSecs()}
-          onResume={() => setPaused(false)}
+          onResume={doResume}
           onEnd={() => {
             clearSnapshot(ctx.workspace.id, MODE_ID);
             ctx.onSessionEnd(buildSessionStats());

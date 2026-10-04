@@ -28,6 +28,7 @@ import {
   lookupDictBatch,
   lookupVocabBatch,
   type DictEntry,
+  type VocabEntry,
   type VocabStatus,
 } from "@/lib/db";
 
@@ -155,6 +156,11 @@ const vocabLoader = makeLoader<VocabStatus>(async (scope, words) => {
   return out;
 }, false);
 
+const vocabEntryLoader = makeLoader<VocabEntry>(
+  (scope, words) => lookupVocabBatch(Number(scope), words),
+  false,
+);
+
 /** Dictionary entries for `words`, deduped + session-cached. Returns a map of
  *  hits only (a missing key means "not in the dictionary") — same shape as
  *  `lookupDictBatch`, so it's a drop-in replacement. */
@@ -173,6 +179,16 @@ export function lookupVocabStatus(
   words: string[],
 ): Promise<Map<string, VocabStatus>> {
   return vocabLoader.load(String(workspaceId), words);
+}
+
+/** Full saved vocab rows for inline word popovers. This is intentionally
+ * separate from the status loader: the popover needs the learner's native
+ * gloss, while status-only callers should keep their smaller projection. */
+export function lookupVocabEntries(
+  workspaceId: number,
+  words: string[],
+): Promise<Map<string, VocabEntry>> {
+  return vocabEntryLoader.load(String(workspaceId), words);
 }
 
 /** Drop cached dictionary entries (all langs, or one). Call after a dict is

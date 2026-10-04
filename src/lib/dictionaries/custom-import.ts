@@ -26,6 +26,7 @@
  * detection rule in `detectFormat` — nothing else changes.
  */
 import type { DictEntry } from "@/lib/db";
+import { encodeDictionaryGloss, type DictionaryMeta, type ExampleSentence } from "@/lib/lookup-result";
 
 export type CustomDictFormat = "json" | "csv" | "tsv";
 
@@ -81,13 +82,40 @@ function parseJson(text: string): DictEntry[] {
   if (Array.isArray(parsed)) {
     for (const row of parsed) {
       if (!row || typeof row !== "object") continue;
-      const r = row as { word?: unknown; reading?: unknown; gloss?: unknown };
+      const r = row as {
+        word?: unknown;
+        reading?: unknown;
+        gloss?: unknown;
+        partOfSpeech?: unknown;
+        definitionEn?: unknown;
+        readingUs?: unknown;
+        readingUk?: unknown;
+        examples?: unknown;
+      };
       if (typeof r.word !== "string" || typeof r.gloss !== "string") continue;
+      const examples: ExampleSentence[] = Array.isArray(r.examples)
+        ? r.examples
+            .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+            .map((item) => ({
+              target: typeof item.target === "string" ? item.target.trim() : "",
+              native: typeof item.native === "string" ? item.native.trim() : "",
+            }))
+            .filter((item) => item.target)
+            .slice(0, 8)
+        : [];
+      const meta: DictionaryMeta = {
+        partOfSpeech:
+          typeof r.partOfSpeech === "string" ? r.partOfSpeech.trim() : null,
+        definitionEn:
+          typeof r.definitionEn === "string" ? r.definitionEn.trim() : null,
+        readingUs: typeof r.readingUs === "string" ? r.readingUs.trim() : null,
+        readingUk: typeof r.readingUk === "string" ? r.readingUk.trim() : null,
+      };
       out.push({
         word: r.word.trim(),
         altWord: null,
         reading: typeof r.reading === "string" ? r.reading.trim() : null,
-        gloss: r.gloss.trim(),
+        gloss: encodeDictionaryGloss(r.gloss, meta, examples),
       });
     }
     return out;

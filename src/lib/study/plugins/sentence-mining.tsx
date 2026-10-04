@@ -51,6 +51,7 @@ import { useProviderConfigs } from "@/lib/provider-context";
 import { languageName, type LanguageCode } from "@/lib/languages";
 import type { StudyPlugin, StudyViewProps, VocabEntry } from "@/lib/study/api";
 import { PrestartShell } from "@/lib/study/prestart";
+import { useActiveSessionTime } from "@/lib/study/session-controls";
 import { cn } from "@/lib/utils";
 
 /**
@@ -143,9 +144,20 @@ function StudyView({ ctx }: StudyViewProps) {
   const [hintsByCard, setHintsByCard] = useState<Record<number, string>>({});
   const [hintBusy, setHintBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const startedAt = useMemo(() => Math.floor(Date.now() / 1000), []);
   // ── Top-bar session controls (parity with vocab-recall + hanzi-writing) ─
   const [paused, setPaused] = useState(false);
+  const studyPaused = paused || ctx.sessionPaused;
+  const getActiveSecs = useActiveSessionTime(studyPaused);
+  function doPause() {
+    if (studyPaused) return;
+    setPaused(true);
+    ctx.pauseSession();
+  }
+  function doResume() {
+    if (!studyPaused) return;
+    setPaused(false);
+    ctx.resumeSession();
+  }
   const [pendingNeverAgain, setPendingNeverAgain] = useState<VocabEntry | null>(null);
   // AI tutor sidebar — same drawer the vocab-recall plugin uses,
   // ported via the shared `StudyAiDrawer` component. The cloze
@@ -184,7 +196,7 @@ function StudyView({ ctx }: StudyViewProps) {
     setBuilding(true);
     setBuildError(null);
     void (async () => {
-      void ctx.ensureSessionStarted("review");
+      if (!ctx.sessionPaused) void ctx.ensureSessionStarted("review");
       try {
         if (mode === "library") {
           const cards = pickCards(ctx.dueVocab, ctx.vocab);
@@ -399,7 +411,7 @@ function StudyView({ ctx }: StudyViewProps) {
         onLeave={() =>
           ctx.onSessionEnd({
             cardsReviewed: 0,
-            durationSecs: Math.floor(Date.now() / 1000) - startedAt,
+            durationSecs: getActiveSecs(),
           })
         }
       />
@@ -415,7 +427,7 @@ function StudyView({ ctx }: StudyViewProps) {
         <h2 className="font-serif text-3xl tracking-tight">Session complete.</h2>
         <p className="text-[13.5px] text-muted-foreground">
           {idx} card{idx === 1 ? "" : "s"} ·{" "}
-          {Math.max(1, Math.floor((Date.now() / 1000 - startedAt) / 60))} min ·{" "}
+          {Math.max(1, Math.floor(getActiveSecs() / 60))} min ·{" "}
           {stats.current.sentencesUsed} from your library,{" "}
           {stats.current.fallbacks} from glosses
         </p>
@@ -424,7 +436,7 @@ function StudyView({ ctx }: StudyViewProps) {
           onClick={() =>
             ctx.onSessionEnd({
               cardsReviewed: idx,
-              durationSecs: Math.floor(Date.now() / 1000) - startedAt,
+              durationSecs: getActiveSecs(),
               grades: { ...stats.current },
               extra: {
                 sentencesUsed: stats.current.sentencesUsed,
@@ -621,7 +633,7 @@ function StudyView({ ctx }: StudyViewProps) {
               </TopBarButton>
               <div className="mx-1 h-5 w-px bg-border" />
               <TopBarButton
-                onClick={() => setPaused(true)}
+                onClick={doPause}
                 tooltip="Pause"
               >
                 <Pause className="size-4" />
@@ -880,17 +892,17 @@ function StudyView({ ctx }: StudyViewProps) {
       {/* Pause overlay — fullscreen take-a-break with Resume / End.
           End ships partial stats so the host's session-summary screen
           renders correctly. */}
-      {paused && (
+      {studyPaused && (
         <PauseOverlay
           progress={(idx / Math.max(1, queue.length)) * 100}
           done={idx}
           total={queue.length}
-          startedAt={startedAt}
-          onResume={() => setPaused(false)}
+          elapsedSecs={getActiveSecs()}
+          onResume={doResume}
           onEnd={() =>
             ctx.onSessionEnd({
               cardsReviewed: idx,
-              durationSecs: Math.floor(Date.now() / 1000) - startedAt,
+              durationSecs: getActiveSecs(),
               grades: { ...stats.current },
               extra: {
                 sentencesUsed: stats.current.sentencesUsed,
@@ -978,21 +990,18 @@ function PauseOverlay({
   progress,
   done,
   total,
-  startedAt,
+  elapsedSecs,
   onResume,
   onEnd,
 }: {
   progress: number;
   done: number;
   total: number;
-  startedAt: number;
+  elapsedSecs: number;
   onResume: () => void;
   onEnd: () => void;
 }) {
-  const minutes = Math.max(
-    1,
-    Math.round((Math.floor(Date.now() / 1000) - startedAt) / 60),
-  );
+  const minutes = Math.max(1, Math.round(elapsedSecs / 60));
   return (
     // The overlay covers the custom title bar, so make the backdrop a
     // window drag region — otherwise the window can't be moved while

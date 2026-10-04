@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState, type CSSProperties } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { DictSearchModal } from "@/components/dict-search-modal";
 import { GlobalAddCard } from "@/components/global-add-card";
@@ -15,6 +15,8 @@ import { useChineseConfig } from "@/lib/chinese-config";
 import { HOSTED } from "@/lib/build-flags";
 import { useSearch } from "@/lib/search-context";
 import { useWorkspace } from "@/lib/workspace-context";
+import { useDisplay } from "@/lib/display-context";
+import { useStudyActive } from "@/lib/study-active-event";
 import { useCloud } from "@/lib/cloud-context";
 import { applyGlobalSearchOnBoot, applyVoiceAskOnBoot } from "@/lib/global-search";
 import { requestVoiceAsk } from "@/lib/ask-intent";
@@ -118,8 +120,16 @@ const SIDEBAR_COLLAPSED_KEY = "sidebar.collapsed";
 
 export function Shell() {
   const { loading, workspaces, active } = useWorkspace();
+  const {
+    backgroundImage,
+    backgroundOpacity,
+    backgroundBlur,
+    sidebarOpacity,
+    cardOpacity,
+  } = useDisplay();
   const cloud = useCloud();
   const search = useSearch();
+  const studyActive = useStudyActive();
   // Auto-sync runs in the background when the user toggles it on
   // (Settings → Cloud) and they're Pro. Returns a status the sidebar
   // can read — kept as a discarded value for now; a future iteration
@@ -365,8 +375,31 @@ export function Shell() {
 
   const onboardingOpen = !loading && showOnboarding;
 
+  const surfaceStyle = {
+    "--tokori-sidebar-opacity": `${Math.round(sidebarOpacity * 100)}%`,
+    "--tokori-card-opacity": `${Math.round(cardOpacity * 100)}%`,
+  } as CSSProperties;
+
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <div
+      className={`relative flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground${
+        backgroundImage ? " tokori-custom-background" : ""
+      }`}
+      style={surfaceStyle}
+    >
+      {backgroundImage && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-8 z-0 bg-cover bg-center bg-no-repeat"
+          style={{
+            backgroundImage: `url(${backgroundImage})`,
+            opacity: backgroundOpacity,
+            filter: `blur(${backgroundBlur}px)`,
+            transform: backgroundBlur > 0 ? "scale(1.03)" : undefined,
+          }}
+        />
+      )}
+      <div className="relative z-10 flex min-h-0 flex-1 flex-col">
       {/* Custom window chrome — desktop builds only. The hosted build
           runs in a real browser tab (which has its own chrome), so the
           whole bar is dead-stripped from that bundle; in plain-browser
@@ -381,15 +414,21 @@ export function Shell() {
       )}
 
       <div className="flex min-h-0 flex-1">
-        <Sidebar
-          activeTab={tab}
-          onTabChange={navigate}
-          onNewWorkspace={() => setShowOnboarding(true)}
-          collapsed={sidebarCollapsed}
-          onCollapsedChange={setSidebarCollapsed}
-        />
+        {!studyActive && (
+          <Sidebar
+            activeTab={tab}
+            onTabChange={navigate}
+            onNewWorkspace={() => setShowOnboarding(true)}
+            collapsed={sidebarCollapsed}
+            onCollapsedChange={setSidebarCollapsed}
+          />
+        )}
 
-        <main className="flex flex-1 flex-col overflow-hidden">
+        <main
+          className={`flex flex-1 flex-col overflow-hidden${
+            studyActive ? " tokori-study-immersive" : ""
+          }`}
+        >
           {/* Banner sits above the tab content so the prompt is visible
               on every workspace-scoped tab. It hides itself when the
               active workspace already has a dictionary, when nothing is
@@ -398,7 +437,7 @@ export function Shell() {
               Skipped on the Dictionaries tab because the install UI is
               literally already on screen, and on Settings to keep that
               view chrome-free. */}
-          {active && tab !== "dictionaries" && tab !== "settings" && (
+          {active && !studyActive && tab !== "dictionaries" && tab !== "settings" && (
             <MissingDictionaryBanner />
           )}
           <div className="flex-1 overflow-hidden">
@@ -465,6 +504,7 @@ export function Shell() {
           />
         </Suspense>
       )}
+      </div>
     </div>
   );
 }

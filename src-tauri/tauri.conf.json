@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "Tokori",
-        "width": 1320,
-        "height": 980,
+        "width": 1440,
+        "height": 810,
         "minWidth": 960,
         "minHeight": 640,
         "resizable": true,

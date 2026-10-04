@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { type DictEntry, type VocabStatus } from "@/lib/db";
-import { lookupDictCached, lookupVocabStatus } from "@/lib/word-lookup";
+import { type DictEntry, type VocabEntry, type VocabStatus } from "@/lib/db";
+import { lookupDictCached, lookupVocabEntries } from "@/lib/word-lookup";
 import type { LanguageCode } from "@/lib/languages";
 import { useWorkspace } from "@/lib/workspace-context";
 import { useDisplay } from "@/lib/display-context";
@@ -21,6 +21,7 @@ function TokenizedInner({
   lang,
   showRuby,
   activeRange,
+  decoration,
 }: {
   text: string;
   lang: LanguageCode;
@@ -31,6 +32,8 @@ function TokenizedInner({
    *  player to follow word/sentence position during TTS playback.
    *  `null` clears the highlight. */
   activeRange?: [number, number] | null;
+  /** How strongly interactive word tokens are decorated. */
+  decoration?: "status" | "subtle" | "none";
 }) {
   const display = useDisplay();
   const { active: workspace } = useWorkspace();
@@ -68,6 +71,9 @@ function TokenizedInner({
   const [vocabStatus, setVocabStatus] = useState<Map<string, VocabStatus>>(
     () => new Map(),
   );
+  const [vocabEntries, setVocabEntries] = useState<Map<string, VocabEntry>>(
+    () => new Map(),
+  );
   // zh-only: composed per-character pinyin for tokens the dictionaries
   // don't know as whole words (jieba compounds, names, neologisms) —
   // keeps the ruby rail unbroken instead of leaving silent gaps.
@@ -88,13 +94,13 @@ function TokenizedInner({
     //   - lookupVocabStatus: coalesced per tick but never cached, so the
     //     known/unknown underline always reflects the latest status.
     void (async () => {
-      const [dictMap, statusMap] = await Promise.all([
+      const [dictMap, vocabMap] = await Promise.all([
         lookupDictCached(lang, words).catch(() => new Map<string, DictEntry>()),
         workspace
-          ? lookupVocabStatus(workspace.id, words).catch(
-              () => new Map<string, VocabStatus>(),
+          ? lookupVocabEntries(workspace.id, words).catch(
+              () => new Map<string, VocabEntry>(),
             )
-          : Promise.resolve(new Map<string, VocabStatus>()),
+          : Promise.resolve(new Map<string, VocabEntry>()),
       ]);
       if (cancelled) return;
       const pairs: [string, LookupResult | null][] = words.map((w) => {
@@ -139,7 +145,10 @@ function TokenizedInner({
       }
 
       setEntries(new Map(pairs));
-      setVocabStatus(new Map(statusMap));
+      setVocabEntries(new Map(vocabMap));
+      setVocabStatus(
+        new Map(Array.from(vocabMap, ([key, value]) => [key, value.status] as const)),
+      );
       setReadingFallbacks(fallbacks);
     })();
     return () => {
@@ -220,11 +229,13 @@ function TokenizedInner({
             word={s.text}
             entry={entry}
             status={status}
+            vocabEntry={vocabEntries.get(s.text) ?? null}
             showRuby={rubyContext}
             lang={lang}
             sourceText={text}
             sourceOffset={offset}
             ttsActive={active}
+            decoration={decoration}
             fallbackReading={readingFallbacks.get(s.text) ?? null}
           />
         );

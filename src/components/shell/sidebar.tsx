@@ -8,6 +8,7 @@ import {
   Clapperboard,
   FolderOpen,
   ChevronDown,
+  History,
   Home,
   Layers,
   Library,
@@ -66,12 +67,25 @@ import { useProviderConfigs } from "@/lib/provider-context";
 import { useCloud } from "@/lib/cloud-context";
 import { useSession } from "@/lib/session-context";
 import { useProfile } from "@/lib/profile-context";
+import { uiText } from "@/lib/ui-language";
 import {
   languageGlyph,
   languageName,
   languageNative,
 } from "@/lib/languages";
-import type { DictEntry } from "@/lib/db";
+import {
+  deleteSession,
+  finalizeStaleSessions,
+  listSessions,
+  type DictEntry,
+  type StudySession,
+} from "@/lib/db";
+import {
+  clearVocabRecallResumeIntent,
+  clearVocabRecallSnapshot,
+  getVocabRecallSnapshotSessionId,
+  setVocabRecallResumeIntent,
+} from "@/lib/study/vocab-recall-session";
 import type { TabId } from "./shell";
 import { SidebarGlyph } from "./sidebar-glyph";
 import { TierBadge } from "./tier-badge";
@@ -138,6 +152,29 @@ const NAV_GROUPS = HOSTED
     })).filter((g) => g.items.length > 0)
   : ALL_NAV_GROUPS;
 
+const NAV_LABELS: Record<string, [string, string]> = {
+  Home: ["Home", "首页"],
+  Conversation: ["Conversation", "对话"],
+  Reader: ["Reader", "阅读器"],
+  Immersion: ["Immersion", "沉浸式"],
+  Flashcards: ["Flashcards", "词卡"],
+  Library: ["Library", "资料库"],
+  Vocabulary: ["Vocabulary", "词汇"],
+  Collections: ["Collections", "集合"],
+  Notes: ["Notes", "笔记"],
+  Journal: ["Journal", "日志"],
+  Dictionary: ["Dictionary", "词典"],
+  Sources: ["Sources", "来源"],
+  Progress: ["Progress", "进度"],
+  Journey: ["Journey", "学习旅程"],
+  Statistics: ["Statistics", "统计"],
+};
+
+function navText(language: Parameters<typeof uiText>[0], label: string) {
+  const pair = NAV_LABELS[label];
+  return pair ? uiText(language, pair[0], pair[1]) : label;
+}
+
 export function Sidebar({
   activeTab,
   onTabChange,
@@ -168,7 +205,7 @@ export function Sidebar({
     <TooltipProvider delayDuration={120} disableHoverableContent>
       <aside
         className={cn(
-          "relative flex shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground transition-[width] duration-200",
+          "relative flex h-full min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar text-sidebar-foreground transition-[width] duration-200",
           collapsed ? "w-[64px]" : search.isActive ? "w-[320px]" : "w-[260px]",
         )}
       >
@@ -202,7 +239,11 @@ export function Sidebar({
                   "flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
                   collapsed && "size-9",
                 )}
-                aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                 aria-label={uiText(
+                   profile.uiLanguage,
+                   collapsed ? "Expand sidebar" : "Collapse sidebar",
+                   collapsed ? "展开侧边栏" : "收起侧边栏",
+                 )}
               >
                 {/* Same glyph as the title bar's toggle — one
                     mechanism, one icon (filled pill = sidebar open). */}
@@ -210,7 +251,11 @@ export function Sidebar({
               </button>
             </TooltipTrigger>
             <TooltipContent side={collapsed ? "right" : "bottom"} sideOffset={6}>
-              {collapsed ? "Expand sidebar" : "Collapse sidebar"}
+               {uiText(
+                 profile.uiLanguage,
+                 collapsed ? "Expand sidebar" : "Collapse sidebar",
+                 collapsed ? "展开侧边栏" : "收起侧边栏",
+               )}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -222,6 +267,7 @@ export function Sidebar({
             onChange={search.setQuery}
             onExpand={() => setCollapsed(false)}
             targetLang={active?.targetLang}
+            uiLanguage={profile.uiLanguage}
             onClear={search.isActive ? search.clear : undefined}
           />
         </div>
@@ -229,13 +275,13 @@ export function Sidebar({
         {search.isActive && !collapsed ? (
           <SearchResultsPane />
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
             <nav className="flex flex-col gap-2 px-2 pt-1">
               {NAV_GROUPS.map((group, gi) => (
                 <div key={gi}>
                   {!collapsed && group.label && (
                     <div className="px-2.5 pb-1 pt-1.5 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-                      {group.label}
+                       {navText(profile.uiLanguage, group.label)}
                     </div>
                   )}
                   {collapsed && gi > 0 && <Separator className="my-1.5" />}
@@ -246,7 +292,7 @@ export function Sidebar({
                       active={activeTab === item.id}
                       onClick={() => onTabChange(item.id)}
                       icon={<item.icon className="size-4" />}
-                      label={item.label}
+                       label={navText(profile.uiLanguage, item.label)}
                     />
                   ))}
                 </div>
@@ -311,13 +357,13 @@ export function Sidebar({
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                 )}
-                aria-label="Settings"
+                 aria-label={uiText(profile.uiLanguage, "Settings", "设置")}
               >
                 <Settings className="size-4" />
               </button>
             </TooltipTrigger>
             <TooltipContent side={collapsed ? "right" : "top"} sideOffset={6}>
-              Settings
+               {uiText(profile.uiLanguage, "Settings", "设置")}
             </TooltipContent>
           </Tooltip>
         </div>
@@ -539,6 +585,7 @@ function SidebarSearch({
   onChange,
   onExpand,
   targetLang,
+  uiLanguage,
   onClear,
 }: {
   collapsed: boolean;
@@ -546,12 +593,13 @@ function SidebarSearch({
   onChange: (v: string) => void;
   onExpand: () => void;
   targetLang: string | undefined;
+  uiLanguage: Parameters<typeof uiText>[0];
   onClear?: () => void;
 }) {
   const placeholder =
     targetLang === "zh"
       ? "搜索 character, pinyin, English…"
-      : "Search dictionary…";
+      : uiText(uiLanguage, "Search dictionary…", "搜索词典…");
 
   if (collapsed) {
     return (
@@ -561,13 +609,13 @@ function SidebarSearch({
             type="button"
             onClick={onExpand}
             className="flex h-8 w-full items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-            aria-label="Search"
+            aria-label={uiText(uiLanguage, "Search", "搜索")}
           >
             <Search className="size-4" />
           </button>
         </TooltipTrigger>
         <TooltipContent side="right" sideOffset={8}>
-          Search
+          {uiText(uiLanguage, "Search", "搜索")}
         </TooltipContent>
       </Tooltip>
     );
@@ -596,7 +644,7 @@ function SidebarSearch({
           "h-8 w-full rounded-md border border-border/60 bg-background/40 pl-7.5 pr-7 text-[12.5px] text-foreground placeholder:text-muted-foreground/70",
           "focus:border-ring focus:bg-background focus:outline-none focus:ring-1 focus:ring-ring",
         )}
-        aria-label="Search dictionary"
+        aria-label={uiText(uiLanguage, "Search dictionary", "搜索词典")}
       />
       {(value || onClear) && (
         <button
@@ -727,6 +775,12 @@ function ResultRow({
 
 function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) {
   const { chats, activeChatId, setActiveChatId, rename, remove } = useChatList();
+  const { active: workspace } = useWorkspace();
+  const { active: studySession } = useSession();
+  const { profile } = useProfile();
+  const tx = (english: string, chinese: string) =>
+    uiText(profile.uiLanguage, english, chinese);
+  const [recentStudySessions, setRecentStudySessions] = useState<StudySession[]>([]);
   // Pull in the unread set + active streams so the row can show a green
   // dot when a reply landed while the user was elsewhere, and a soft
   // pulse when generation is currently mid-flight.
@@ -747,6 +801,38 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [clearing, setClearing] = useState(false);
 
+  // Study sessions are separate from conversations in the data model. The
+  // old Recents section only read ChatList, so a Flashcards session was
+  // persisted correctly but had nowhere to appear in the sidebar. Refresh
+  // when the workspace/session lifecycle changes so ending a review makes it
+  // visible without restarting the app.
+  useEffect(() => {
+    let cancelled = false;
+    if (!workspace) {
+      setRecentStudySessions([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+    const load = async () => {
+      // A hard close can leave the row open until the next app boot. Do the
+      // same bounded cleanup as SessionProvider before reading Recents, but
+      // never touch the live row while a session is currently active.
+      if (!studySession) await finalizeStaleSessions(workspace.id);
+      const sessions = await listSessions(workspace.id);
+      if (cancelled) return;
+      setRecentStudySessions(
+        sessions.filter((item) => item.endedAt != null).slice(0, 4),
+      );
+    };
+    void load().catch(() => {
+      if (!cancelled) setRecentStudySessions([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace?.id, studySession?.id]);
+
   async function clearAllChats() {
     // Snapshot the list because `remove` mutates the underlying chats
     // state — iterating the live array would skip every other entry.
@@ -765,14 +851,14 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
     }
   }
 
-  if (chats.length === 0) {
+  if (chats.length === 0 && recentStudySessions.length === 0) {
     return (
       <div className="px-3 pb-3 pt-3">
         <div className="px-1 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-          Recents
+          {tx("Recents", "最近使用")}
         </div>
         <p className="px-1 py-1.5 text-[11.5px] text-muted-foreground">
-          No conversations yet.
+            {tx("No conversations or study sessions yet.", "还没有对话或学习会话。")}
         </p>
       </div>
     );
@@ -799,36 +885,48 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
     setPendingDelete({ id, title });
   }
 
+  function resumeStudySession(item: StudySession) {
+    if (item.kind !== "review" || !workspace) {
+      onTabChange("statistics");
+      return;
+    }
+    setVocabRecallResumeIntent(workspace.id, item.id);
+    onTabChange("flashcards");
+  }
+
   return (
     <>
     <div className="mt-1 flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between px-2.5 pb-1 pt-3">
         <span className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-          Recents
+          {tx("Recents", "最近使用")}
         </span>
         {/* Bulk clear — only renders when there's something to clear so
             the section stays visually quiet on first launch. Tooltip
             spells out destructiveness; the AlertDialog below is the
             actual gate. */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={() => setConfirmClearAll(true)}
-              className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-destructive"
-              aria-label="Clear all chats"
-            >
-              <Trash2 className="size-3" />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent side="right" sideOffset={6}>
-            Clear all recent chats
-          </TooltipContent>
-        </Tooltip>
+        {chats.length > 0 && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => setConfirmClearAll(true)}
+                className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:bg-accent hover:text-destructive"
+                 aria-label={tx("Clear all chats", "清空所有对话")}
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={6}>
+               {tx("Clear all recent chats", "清空最近对话")}
+            </TooltipContent>
+          </Tooltip>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
-        <ul className="flex flex-col">
-          {visible.map((c) => {
+        {chats.length > 0 ? (
+          <ul className="flex flex-col">
+            {visible.map((c) => {
             const isUnread = bg.unread.has(c.id);
             const isStreaming = bg.activeStreamIds.has(c.id);
             const isTitlePending = bg.titlePending.has(c.id);
@@ -915,8 +1013,13 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
               </div>
             </li>
             );
-          })}
-        </ul>
+            })}
+          </ul>
+        ) : (
+          <p className="px-1 py-1.5 text-[11.5px] text-muted-foreground">
+            {tx("No conversations yet.", "还没有对话。")}
+          </p>
+        )}
         {hasMore && (
           <button
             type="button"
@@ -929,8 +1032,73 @@ function RecentsSection({ onTabChange }: { onTabChange: (tab: TabId) => void }) 
                 showAll && "rotate-180",
               )}
             />
-            {showAll ? "Show less" : `Load more (${chats.length - limit})`}
+            {showAll
+              ? tx("Show less", "收起")
+              : tx(`Load more (${chats.length - limit})`, `加载更多（${chats.length - limit}）`)}
           </button>
+        )}
+        {recentStudySessions.length > 0 && (
+          <div className="mt-3 border-t border-border/60 pt-2">
+            <div className="px-1 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
+              {tx("Study sessions", "学习会话")}
+            </div>
+            <ul className="flex flex-col">
+              {recentStudySessions.map((item) => (
+                <li
+                  key={`study-session-${item.id}`}
+                  className="group/study-row relative"
+                >
+                  <button
+                    type="button"
+                    onClick={() => resumeStudySession(item)}
+                    className="flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-8 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+                    title={
+                      item.kind === "review"
+                        ? tx("Resume this flashcards session", "继续这个词卡会话")
+                        : tx("Open Statistics", "打开统计")
+                    }
+                  >
+                    <History className="size-3.5 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {tx(
+                        studySessionLabel(item.kind),
+                        item.kind === "review" ? "词卡复习" : "沉浸式会话",
+                      )}
+                    </span>
+                    <span className="shrink-0 text-[10.5px] tabular-nums text-muted-foreground/80">
+                      {formatRecentSession(item)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async (event) => {
+                      event.stopPropagation();
+                      await deleteSession(item.id);
+                      if (
+                        workspace &&
+                        item.kind === "review" &&
+                        getVocabRecallSnapshotSessionId(workspace.id) === item.id
+                      ) {
+                        clearVocabRecallSnapshot(workspace.id);
+                        clearVocabRecallResumeIntent(workspace.id);
+                      }
+                      setRecentStudySessions((items) =>
+                        items.filter((session) => session.id !== item.id),
+                      );
+                    }}
+                    className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground/50 opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover/study-row:opacity-100"
+                    aria-label={tx(
+                      `Delete ${studySessionLabel(item.kind)}`,
+                      `删除${item.kind === "review" ? "词卡复习" : "沉浸式会话"}`,
+                    )}
+                    title={tx("Delete study session", "删除学习会话")}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
     </div>
@@ -1040,4 +1208,31 @@ function LangBadge({ code, small = false }: { code: string | undefined; small?: 
       {languageGlyph(code)}
     </div>
   );
+}
+
+function studySessionLabel(kind: string): string {
+  switch (kind) {
+    case "review":
+      return "Flashcards review";
+    case "reading":
+      return "Reading session";
+    case "writing":
+      return "Writing session";
+    case "speaking":
+      return "Speaking session";
+    case "immersion":
+      return "Immersion session";
+    default:
+      return kind ? `${kind} session` : "Study session";
+  }
+}
+
+function formatRecentSession(session: StudySession): string {
+  const duration = Math.max(0, Math.round(session.durationSecs ?? 0));
+  const durationLabel = duration < 60 ? `${duration}s` : `${Math.round(duration / 60)}m`;
+  const dateLabel = new Date(session.startedAt * 1000).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  return `${durationLabel} · ${dateLabel}`;
 }

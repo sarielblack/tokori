@@ -12,7 +12,7 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
-import { CheckCircle2, Zap } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -36,6 +36,8 @@ export type PrestartShellProps = {
   startLabel?: string;
   startDisabled?: boolean;
   startHint?: string;
+  /** Return to the study-mode picker without starting this plugin. */
+  onBack?: () => void;
 };
 
 export function PrestartShell({
@@ -51,9 +53,20 @@ export function PrestartShell({
   startLabel = "Start session",
   startDisabled,
   startHint,
+  onBack,
 }: PrestartShellProps) {
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto px-6 py-8">
+    <div className="relative flex h-full items-center justify-center overflow-y-auto px-6 py-8">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="absolute left-5 top-5 inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/35 px-3 py-1.5 text-[11.5px] text-muted-foreground backdrop-blur-md transition-colors hover:bg-background/70 hover:text-foreground"
+        >
+          <ArrowLeft className="size-3.5" />
+          Back to study modes
+        </button>
+      )}
       <div className="w-full max-w-2xl space-y-5">
         <div className="text-center">
           <div className="inline-flex items-center gap-1.5 rounded-full bg-foreground/5 px-3 py-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">

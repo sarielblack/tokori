@@ -95,7 +95,13 @@ import {
   peekCustomStudyHandoff,
   type CustomStudyHandoff,
 } from "@/lib/study/custom-study";
-import { pluginsForWorkspace } from "@/lib/study/registry";
+import {
+  clearVocabRecallSnapshot,
+  clearVocabRecallResumeIntent,
+  getVocabRecallResumeIntent,
+  hasVocabRecallSnapshot,
+} from "@/lib/study/vocab-recall-session";
+import { pluginById, pluginsForWorkspace } from "@/lib/study/registry";
 
 type Mode = "review" | "browse";
 
@@ -336,6 +342,79 @@ function StudyMode({
     [workspace, studyCfg.config.hiddenPlugins],
   );
 
+  // A recent-session click leaves a one-shot resume intent. Restore only for
+  // that explicit action; a normal visit still opens on the picker.
+  const resumeAttemptedRef = useRef<number | null>(null);
+  // Once a workspace has auto-opened its configured default, keep the picker
+  // available when the user deliberately chooses "Change mode". Without
+  // this guard the default effect would immediately remount the same plugin.
+  const autoPickedWorkspaceRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (picked || summary || !workspace || !vocab || !dueVocab) return;
+    const sessionId = getVocabRecallResumeIntent(workspace.id);
+    if (
+      sessionId == null || resumeAttemptedRef.current === sessionId
+    ) {
+      return;
+    }
+    if (!hasVocabRecallSnapshot(workspace.id)) {
+      clearVocabRecallResumeIntent(workspace.id);
+      return;
+    }
+    resumeAttemptedRef.current = sessionId;
+    const plugin =
+      plugins.find((p) => p.meta.id === "vocab-recall") ??
+      pluginById("vocab-recall");
+    if (!plugin || !plugins.some((p) => p.meta.id === plugin.meta.id)) return;
+    void session.resumePersisted(sessionId).then((restored) => {
+      if (!restored) {
+        clearVocabRecallResumeIntent(workspace.id);
+        return;
+      }
+      createdSessionIdRef.current = sessionId;
+      clearVocabRecallResumeIntent(workspace.id);
+      setPicked(plugin);
+      localStorage.setItem(ACTIVE_PLUGIN_KEY, plugin.meta.id);
+    });
+  }, [picked, summary, workspace, vocab, dueVocab, plugins, session]);
+
+  // The workspace's Settings → Study → Default study mode is the normal
+  // entry point. The mode picker remains available through the visible
+  // "Change mode" control, but routine visits should not ask the same
+  // question over and over.
+  useEffect(() => {
+    if (
+      picked ||
+      summary ||
+      !workspace ||
+      !vocab ||
+      !dueVocab ||
+      !studyCfg.loaded ||
+      autoPickedWorkspaceRef.current === workspace.id ||
+      getVocabRecallResumeIntent(workspace.id) != null
+    ) {
+      return;
+    }
+    const defaultPlugin =
+      plugins.find((p) => p.meta.id === studyCfg.config.defaultPlugin) ??
+      plugins[0];
+    if (!defaultPlugin) return;
+    autoPickedWorkspaceRef.current = workspace.id;
+    session.resume();
+    setPicked(defaultPlugin);
+    localStorage.setItem(ACTIVE_PLUGIN_KEY, defaultPlugin.meta.id);
+  }, [
+    vocab,
+    dueVocab,
+    picked,
+    plugins,
+    session,
+    studyCfg.config.defaultPlugin,
+    studyCfg.loaded,
+    summary,
+    workspace,
+  ]);
+
   // Load vocab + due once per workspace. Two modes:
   //
   //   • Whole-workspace (default) — bounded study queue + strict-due
@@ -575,13 +654,25 @@ function StudyMode({
         // started this session, or another view did) we leave the
         // session alone — the chip owns its lifecycle.
         if (created) createdSessionIdRef.current = s.id;
+        return s.id;
       },
       // Plugins drive these from their own pause UI so the session clock
       // (and the idle auto-end) freezes while the user is paused.
+      sessionPaused: session.paused,
+      sessionActiveSecs: session.activeSecs,
       pauseSession: session.pause,
       resumeSession: session.resume,
       bump: async (kind) => {
         await session.bump(kind);
+      },
+      onChangeMode: () => {
+        session.pause();
+        if (picked?.meta.id === "vocab-recall" && workspace) {
+          clearVocabRecallSnapshot(workspace.id);
+        }
+        setPicked(null);
+        setDrillMode(customScope?.drill ?? restudyToday);
+        localStorage.removeItem(ACTIVE_PLUGIN_KEY);
       },
       onSessionEnd: (stats) => {
         // Show the summary screen immediately…
@@ -620,6 +711,7 @@ function StudyMode({
     studyCfg.config.srs,
     drillMode,
     anchoredToday,
+    picked,
   ]);
 
   if (!workspace) return null;
@@ -704,7 +796,12 @@ function StudyMode({
         restudyOffer={restudyToday || customScope ? 0 : restudyCount}
         onStartRestudy={startRestudy}
         onExitRestudy={exitRestudy}
+        onBack={() => navigateToTab("dashboard")}
         onPick={(p) => {
+          // Picking a study mode is an explicit resume/start action. This
+          // also reopens a session that was paused by the Switch mode path;
+          // once the plugin is mounted, its own pause controls remain sticky.
+          session.resume();
           setPicked(p);
           localStorage.setItem(ACTIVE_PLUGIN_KEY, p.meta.id);
         }}
@@ -713,65 +810,21 @@ function StudyMode({
   }
 
   // Active session — fullscreen mount of the picked plugin. The plugin
-  // owns its own top bar (TopActionBar with progress + Known/Boost/Block/
-  // Pause). We sit a slim "Switch mode" strip above it so the user can
-  // bail back to the picker without having to End the session through
-  // the Pause overlay — every plugin gets the back path for free,
-  // without each one having to grow a button. Mid-session graded cards
-  // are already persisted via ctx.reviewVocab, so dropping the queue
-  // here just abandons un-graded cards (which is what "switch mode"
-  // means anyway).
+  // owns its own small top bar; keeping the host chrome out of this area
+  // is what makes the background and card feel like an immersion mode.
   const Plugin = picked.StudyView;
   return (
-    <div className="flex flex-1 flex-col min-h-0">
-      <div className="flex items-center gap-3 border-b border-border bg-muted/20 px-3 py-1.5">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div className="group/change-mode absolute left-0 top-0 z-20 h-14 w-44">
         <button
           type="button"
-          onClick={() => {
-            // Freeze the session clock while the user sits on the picker —
-            // time on the review home screen isn't study time. The next
-            // plugin that calls ensureSessionStarted resumes the same
-            // session, so the accrued active seconds stay continuous.
-            session.pause();
-            setPicked(null);
-            // Restore the scope's drill default rather than blanket-off
-            // — bailing out of one mode mid-cram (or mid-re-study) must
-            // not silently arm SRS writes for the next one.
-            setDrillMode(customScope?.drill ?? restudyToday);
-            localStorage.removeItem(ACTIVE_PLUGIN_KEY);
-          }}
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
-          title="Pick a different study mode (any un-graded cards in this queue are dropped)"
+          onClick={() => ctx.onChangeMode?.()}
+          className="pointer-events-none absolute left-3 top-2 inline-flex items-center gap-1 rounded-full border border-border/50 bg-background/25 px-2 py-1 text-[11px] text-muted-foreground opacity-0 backdrop-blur-md transition-opacity hover:bg-background/60 hover:text-foreground group-hover/change-mode:pointer-events-auto group-hover/change-mode:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+          title="Choose a different study mode"
         >
           <ArrowLeft className="size-3.5" />
-          Switch mode
+          Change mode
         </button>
-        <span className="shrink-0 text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
-          {picked.meta.name}
-        </span>
-        {customScope && (
-          <span
-            className="inline-flex min-w-0 items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-wider text-violet-700 dark:text-violet-300"
-            title={`Custom study — only the words in "${customScope.name}" are in this session`}
-          >
-            <GraduationCap className="size-3 shrink-0" />
-            <span className="truncate">Custom · {customScope.name}</span>
-          </span>
-        )}
-        {restudyToday && (
-          <span
-            className="inline-flex min-w-0 items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-wider text-emerald-700 dark:text-emerald-400"
-            title="Re-studying everything you reviewed today"
-          >
-            <RotateCcw className="size-3 shrink-0" />
-            Today again
-          </span>
-        )}
-        {drillMode && (
-          <span className="ml-auto shrink-0 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-400">
-            Drill — no SRS
-          </span>
-        )}
       </div>
       <Plugin ctx={ctx} />
     </div>
@@ -787,6 +840,7 @@ function PluginPicker({
   restudyOffer,
   onStartRestudy,
   onExitRestudy,
+  onBack,
   onPick,
 }: {
   plugins: StudyPlugin[];
@@ -802,10 +856,19 @@ function PluginPicker({
   restudyOffer: number;
   onStartRestudy: () => void;
   onExitRestudy: () => void;
+  onBack: () => void;
   onPick: (p: StudyPlugin) => void;
 }) {
   return (
-    <div className="flex flex-1 items-center justify-center px-6 py-8">
+    <div className="relative flex flex-1 items-center justify-center px-6 py-8">
+      <button
+        type="button"
+        onClick={onBack}
+        className="absolute left-5 top-5 inline-flex items-center gap-1.5 rounded-full border border-border/60 bg-background/35 px-3 py-1.5 text-[11.5px] text-muted-foreground backdrop-blur-md transition-colors hover:bg-background/70 hover:text-foreground"
+      >
+        <ArrowLeft className="size-3.5" />
+        Back to Home
+      </button>
       <div className="w-full max-w-2xl space-y-4">
         {restudyActive && (
           <div className="flex items-start gap-3 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">

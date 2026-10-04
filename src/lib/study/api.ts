@@ -144,18 +144,28 @@ export type StudyContext = {
   /** Speak text through the user's configured TTS provider. */
   speak: (text: string, lang?: string) => Promise<void>;
   /** Mark a session as started in the session tracker (counts toward streak). */
-  ensureSessionStarted: (kind: "review" | "writing" | "speaking") => Promise<void>;
+  ensureSessionStarted: (kind: "review" | "writing" | "speaking") => Promise<number | null>;
   /** Freeze / resume the session clock + auto-idle timer. Call these
    *  when the plugin shows / hides its own pause UI so paused time
    *  doesn't count as study time (the sidebar clock, the idle auto-end,
    *  and the persisted `duration_secs` all honour it). No-ops when no
    *  session is running. */
+  /** True when the host session is paused externally (for example from
+   *  the sidebar or because the app window is inactive). Plugins should
+   *  combine this with their local pause state for timers and overlays. */
+  sessionPaused: boolean;
+  /** Canonical active seconds for the host session. This excludes manual
+   *  pauses and inactive-window time, and remains stable across plugin
+   *  switches. */
+  sessionActiveSecs: number;
   pauseSession: () => void;
   resumeSession: () => void;
   /** Bump a per-session counter ("words_seen", "words_saved"). */
   bump: (kind: "words_seen" | "words_saved") => Promise<void>;
   /** Fire when the plugin is done. Pass stats for the summary screen. */
   onSessionEnd: (stats: StudySessionStats) => void;
+  /** Return to the study-mode picker without ending the whole Flashcards tab. */
+  onChangeMode?: () => void;
   /** Host-owned flag — when true, `reviewVocab` is a no-op so the
    *  user can drill cards without poisoning their FSRS schedule.
    *  Plugins read this for chrome (the "drill — no SRS" badge) and

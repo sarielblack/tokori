@@ -109,7 +109,7 @@ export function FlashcardViewDialog({
         >
           {/* Front — prompt fields from the card's layout. */}
           <div
-            className="absolute inset-0 flex flex-col items-center justify-center px-6 py-8 transition-opacity duration-200"
+            className="absolute inset-0 flex flex-col items-center justify-center overflow-y-auto px-6 py-8 transition-opacity duration-200"
             style={{
               opacity: flipped ? 0 : 1,
               pointerEvents: flipped ? "none" : "auto",

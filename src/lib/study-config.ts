@@ -66,7 +66,7 @@ export function defaultsFor(lang: LanguageCode): StudyConfig {
     defaultPlugin: "vocab-recall",
     dailyNewLimit: 20,
     dailyReviewLimit: 200,
-    autoplayAudio: cjk, // CJK readers benefit more from hearing the word
+    autoplayAudio: true, // Hearing the target on each revealed card is useful for every language.
     readingMode: cjk ? "hidden" : "shown",
     showExamples: true,
     hiddenPlugins: [],

@@ -3,6 +3,8 @@ import { consumeSettingsIntent } from "@/lib/settings-intent";
 import { HOSTED } from "@/lib/build-flags";
 import type { LanguageCode } from "@/lib/languages";
 import { useWorkspace } from "@/lib/workspace-context";
+import { useProfile } from "@/lib/profile-context";
+import { uiText } from "@/lib/ui-language";
 import {
   BookOpen,
   Cloud,
@@ -85,6 +87,25 @@ const SECTIONS: {
   { id: "about", label: "About", icon: Info, description: "Version & credits" },
 ];
 
+const SECTION_LABELS: Record<SettingsSection, [string, string]> = {
+  profile: ["Profile", "个人设置"],
+  cloud: ["Cloud account", "云端账户"],
+  providers: ["Providers", "模型提供方"],
+  prompts: ["Tutor prompts", "导师提示词"],
+  dictionaries: ["Dictionaries", "词典"],
+  translation: ["Translation", "翻译"],
+  tts: ["Voice", "语音"],
+  study: ["Study", "学习"],
+  chinese: ["Chinese", "中文"],
+  anki: ["Anki", "Anki"],
+  addons: ["Addons", "扩展"],
+  "local-api": ["Local API", "本地 API"],
+  "remote-access": ["Remote access", "远程访问"],
+  desktop: ["Desktop", "桌面"],
+  storage: ["Storage", "存储"],
+  about: ["About", "关于"],
+};
+
 // Sections that have no meaning on the hosted (cloud) build.
 // `providers` is replaced by the synthesised cloud row (no UI needed),
 // `dictionaries` / `knowledge` rely on filesystem access, `local-api`
@@ -115,6 +136,7 @@ const LANG_SCOPED_SECTIONS: Partial<Record<SettingsSection, LanguageCode[]>> = {
 
 export function SettingsView() {
   const { active: workspace } = useWorkspace();
+  const { profile } = useProfile();
   const [section, setSection] = useState<SettingsSection>("profile");
 
   // Filter the sidebar list based on the active workspace's
@@ -167,9 +189,9 @@ export function SettingsView() {
       {sidebarOpen && (
       <aside className="flex w-[220px] shrink-0 flex-col gap-0.5 border-r border-border px-3 py-6">
         <h2 className="px-2.5 pb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Settings
+          {uiText(profile.uiLanguage, "Settings", "设置")}
         </h2>
-        {visibleSections.map(({ id, label, icon: Icon }) => (
+        {visibleSections.map(({ id, icon: Icon }) => (
           <button
             key={id}
             type="button"
@@ -182,12 +204,16 @@ export function SettingsView() {
             )}
           >
             <Icon className="size-4" />
-            {label}
+            {uiText(profile.uiLanguage, SECTION_LABELS[id][0], SECTION_LABELS[id][1])}
           </button>
         ))}
         <div className="mt-auto px-2.5 pt-4 text-[10.5px] text-muted-foreground">
           <Cpu className="mb-1 size-3" />
-          Local-first · everything stays on this machine
+          {uiText(
+            profile.uiLanguage,
+            "Local-first · everything stays on this machine",
+            "本地优先 · 所有数据保存在这台电脑上",
+          )}
         </div>
       </aside>
       )}
@@ -196,8 +222,8 @@ export function SettingsView() {
         open={sidebarOpen}
         onToggle={toggleSidebar}
         width={220}
-        visibleLabel="Hide settings nav"
-        hiddenLabel="Show settings nav"
+        visibleLabel={uiText(profile.uiLanguage, "Hide settings nav", "隐藏设置导航")}
+        hiddenLabel={uiText(profile.uiLanguage, "Show settings nav", "显示设置导航")}
       />
 
       <div className="flex-1 overflow-y-auto">

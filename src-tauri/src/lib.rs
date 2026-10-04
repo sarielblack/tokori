@@ -2468,30 +2468,18 @@ pub fn run() {
 
             // First-launch window sizer.
             //
-            // The static config in tauri.conf.json gives us a sane minimum
-            // (1320×980), but on a real desktop we want to fill more of the
-            // screen on the very first run so the user lands in a roomy
-            // workspace instead of squinting at a small floating window.
-            //
-            // Strategy:
-            //   • Mark this as "done" with a tiny file under app_config_dir
-            //     so subsequent launches respect whatever size the user
-            //     dragged the window to. We don't ship tauri-plugin-window-
-            //     state yet, but a single boolean marker is enough — once
-            //     we've sized once, we step out of the user's way forever.
-            //   • If the primary monitor's logical size fits Full HD
-            //     (≥ 1920×1080), set the window to 1920×1080 and re-center.
-            //     Big enough to feel like "the app", small enough to leave
-            //     other windows visible behind on a typical 2K/4K monitor.
-            //   • Otherwise (laptop, smaller external) just maximize. Better
-            //     than spilling off-screen.
+            // Keep the first launch compact enough for laptop screens. The
+            // window-state plugin takes over after this migration and keeps
+            // any size the user chooses later.
             {
                 use tauri::Manager;
                 let cfg_dir = app
                     .path()
                     .app_config_dir()
                     .unwrap_or_else(|_| std::env::temp_dir());
-                let marker = cfg_dir.join(".window-init.done");
+                // Version the marker so an existing installation receives
+                // the responsive-window migration once after upgrading.
+                let marker = cfg_dir.join(".window-init.v3.done");
                 if !marker.exists() {
                     if let Some(window) = app.get_webview_window("main") {
                         // Resolve the monitor associated with the window so a
@@ -2503,16 +2491,29 @@ pub fn run() {
                             let scale = monitor.scale_factor();
                             let logical_w = (physical.width as f64 / scale).round() as u32;
                             let logical_h = (physical.height as f64 / scale).round() as u32;
-                            if logical_w >= 1920 && logical_h >= 1080 {
-                                let _ = window.set_size(tauri::LogicalSize::new(1920u32, 1080u32));
-                                let _ = window.center();
-                            } else {
-                                let _ = window.maximize();
-                            }
+                            // 1920 px on a 2560 px monitor is 75%, which is
+                            // the user's preferred wide-but-not-fullscreen
+                            // layout. Cap the width so 4K/ultrawide screens
+                            // remain comfortable rather than becoming a
+                            // second full-screen canvas.
+                            let target_w = ((logical_w as f64 * 0.75).round() as u32)
+                                .clamp(960, 1920);
+                            // Keep the window at a conventional 16:9 shape
+                            // based on the chosen width. On a 2560x1440
+                            // display this gives the requested 1920x1080
+                            // window, while the available-height cap keeps
+                            // smaller displays usable.
+                            let usable_h = logical_h.saturating_sub(80);
+                            let target_h = ((target_w as f64 * 9.0 / 16.0).round() as u32)
+                                .min(usable_h)
+                                .clamp(640, 1080);
+                            let _ = window.unmaximize();
+                            let _ = window.set_size(tauri::LogicalSize::new(target_w, target_h));
+                            let _ = window.center();
                         } else {
-                            // No monitor info — fall back to maximize so we at
-                            // least fill whatever the OS thinks we're on.
-                            let _ = window.maximize();
+                            let _ = window.unmaximize();
+                            let _ = window.set_size(tauri::LogicalSize::new(1280u32, 760u32));
+                            let _ = window.center();
                         }
                     }
                     if let Some(parent) = marker.parent() {

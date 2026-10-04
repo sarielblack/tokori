@@ -56,7 +56,10 @@ export type CardLayout = {
 export function defaultLayoutForKind(kind: VocabKind): CardLayout {
   switch (kind) {
     case "sentence":
-      return { front: ["word"], back: ["translation", "definition"] };
+      // Sentence imports store the Chinese scene/prompt in `word` and the
+      // target-language sentence in `gloss`. Put the sentence on the prompt
+      // side so Browse cards train active English recall.
+      return { front: ["definition"], back: ["translation", "word"] };
     case "writing":
       return { front: ["definition"], back: ["word", "reading"] };
     case "vocab":

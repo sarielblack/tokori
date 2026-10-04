@@ -30,6 +30,7 @@ import { Pinyin } from "@/components/pinyin";
 import { PitchKana } from "@/components/reading";
 import { PushToAnkiButton } from "@/components/push-to-anki";
 import { SpeakButton } from "@/components/speak-button";
+import { useTTS } from "@/lib/tts-context";
 import {
   addDictEntry,
   addWordToCollection,
@@ -43,6 +44,7 @@ import {
   updateVocabFields,
   upsertPersonalDictEntry,
   type Collection,
+  type VocabEntry,
   type VocabStatus,
 } from "@/lib/db";
 import {
@@ -124,6 +126,7 @@ export function WordPopover({
   word,
   entry,
   status,
+  vocabEntry = null,
   showRuby = false,
   lang,
   sourceText,
@@ -131,6 +134,7 @@ export function WordPopover({
   ttsActive,
   variant = "inline",
   fallbackReading = null,
+  decoration = "status",
 }: {
   word: string;
   /** May be null when the word isn't in any installed dictionary. The cell
@@ -138,6 +142,8 @@ export function WordPopover({
    *  to vocab anyway and jump to the full dictionary search. */
   entry: LookupResult | null;
   status: VocabStatus | null;
+  /** Full saved row, whose gloss is the learner's native-language meaning. */
+  vocabEntry?: VocabEntry | null;
   showRuby?: boolean;
   lang: LanguageCode;
   /** Full prose this word lives inside — used to find the surrounding
@@ -155,12 +161,17 @@ export function WordPopover({
    *  body keeps showing true dictionary data, so a missing entry still
    *  reads as missing. */
   fallbackReading?: string | null;
+  /** Sentence cards use a quiet hover affordance instead of status-red underlines. */
+  decoration?: "status" | "subtle" | "none";
 }) {
   const { active: workspace } = useWorkspace();
   const { bump } = useSession();
   const display = useDisplay();
+  const tts = useTTS();
   const { sendChat } = useProviderConfigs();
-  const [localStatus, setLocalStatus] = useState<VocabStatus | null>(status);
+  const [localStatus, setLocalStatus] = useState<VocabStatus | null>(
+    status ?? vocabEntry?.status ?? null,
+  );
   const [busy, setBusy] = useState(false);
   // Full plain-text message when this popover lives inside fragmented
   // markdown (chat replies). `sourceText` there can be a single bolded
@@ -211,6 +222,16 @@ export function WordPopover({
   }
 
   const effectiveEntry = localEntry ?? entry;
+  const readingForHeader =
+    lang === "en"
+      ? tts.config.englishAccent === "uk"
+        ? effectiveEntry?.readingUk ?? effectiveEntry?.readingUs ?? effectiveEntry?.reading
+        : tts.config.englishAccent === "us"
+          ? effectiveEntry?.readingUs ?? effectiveEntry?.readingUk ?? effectiveEntry?.reading
+          : effectiveEntry?.readingUs ?? effectiveEntry?.readingUk ?? effectiveEntry?.reading
+      : effectiveEntry?.reading;
+  const savedGloss = vocabEntry?.gloss?.trim() || null;
+  const displayGloss = savedGloss ?? effectiveEntry?.gloss ?? null;
 
   // Chinese script preference (Settings → Chinese). When the learner
   // picked "traditional", the dictionary popover shows the traditional
@@ -231,7 +252,10 @@ export function WordPopover({
       : word;
 
   // Keep local state in sync if the parent's vocab map changes (e.g. after rebuild).
-  useEffect(() => setLocalStatus(status), [status]);
+  useEffect(
+    () => setLocalStatus(status ?? vocabEntry?.status ?? null),
+    [status, vocabEntry?.status],
+  );
 
   async function generateDefinition() {
     if (!workspace || generating) return;
@@ -453,15 +477,19 @@ export function WordPopover({
   // this" colour throughout the UI). The dotted fallback is for
   // words with no vocab row yet.
   const baseDecoration =
-    localStatus === "mastered"
-      ? "underline decoration-2 underline-offset-[3px] decoration-transparent"
-      : localStatus === "review"
-        ? "underline decoration-2 underline-offset-[3px] decoration-sky-500/80"
-        : localStatus === "learning"
-          ? "underline decoration-2 underline-offset-[3px] decoration-amber-400/90"
-          : localStatus === "new"
-            ? "underline decoration-2 underline-offset-[3px] decoration-rose-400/85"
-            : "underline decoration-dotted decoration-2 underline-offset-[3px] decoration-muted-foreground/45";
+    decoration === "none"
+      ? ""
+      : decoration === "subtle"
+        ? "border-b border-dotted border-muted-foreground/30"
+        : localStatus === "mastered"
+          ? "underline decoration-2 underline-offset-[3px] decoration-transparent"
+          : localStatus === "review"
+            ? "underline decoration-2 underline-offset-[3px] decoration-sky-500/80"
+            : localStatus === "learning"
+              ? "underline decoration-2 underline-offset-[3px] decoration-amber-400/90"
+              : localStatus === "new"
+                ? "underline decoration-2 underline-offset-[3px] decoration-rose-400/85"
+                : "underline decoration-dotted decoration-2 underline-offset-[3px] decoration-muted-foreground/45";
 
   // The trigger is the only thing that differs between variants; the
   // popover body below is identical for both.
@@ -557,26 +585,31 @@ export function WordPopover({
                 简 {word}
               </div>
             )}
-            {effectiveEntry?.reading && (
+            {readingForHeader && (
               <div className="mt-0.5 text-[13px] font-semibold text-emerald-600 dark:text-emerald-400">
                 {lang === "zh" ? (
-                  <Pinyin raw={effectiveEntry.reading} />
+                  <Pinyin raw={readingForHeader} />
                 ) : lang === "ja" ? (
                   // Japanese reading carries pitch (when seeded). Even
                   // without an accent number `PitchKana` falls through
                   // to the plain reading string, so we always go
                   // through the same path here for ja.
                   <PitchKana
-                    reading={effectiveEntry.reading}
-                    accent={effectiveEntry.pitchAccent}
+                    reading={readingForHeader}
+                    accent={effectiveEntry?.pitchAccent}
                   />
                 ) : (
                   // Plain rendering for hangul / IPA-ish readings on
                   // other languages — the Pinyin parser would
                   // mis-tag them as toneless syllables and strip
                   // combining marks.
-                  effectiveEntry.reading
+                  readingForHeader
                 )}
+              </div>
+            )}
+            {effectiveEntry?.partOfSpeech && (
+              <div className="mt-1 text-[11px] font-medium text-muted-foreground">
+                {effectiveEntry.partOfSpeech}
               </div>
             )}
             {/* Pitch-kind label (heiban / atamadaka / nakadaka / odaka).
@@ -636,7 +669,7 @@ export function WordPopover({
             isn't in any installed dictionary, we still render the popover
             with a "no definition" hint + ways to add one (AI or by hand). */}
         <div className="relative border-b border-border/60">
-          {!editing && effectiveEntry?.gloss && (
+          {!editing && displayGloss && (
             <button
               type="button"
               onClick={openEditor}
@@ -650,7 +683,7 @@ export function WordPopover({
           <div
             className={cn(
               "max-h-56 overflow-y-auto px-4 py-3",
-              !editing && effectiveEntry?.gloss && "pr-9",
+              !editing && displayGloss && "pr-9",
             )}
           >
             {editing ? (
@@ -658,7 +691,7 @@ export function WordPopover({
                 lang={lang}
                 word={word}
                 initialReading={effectiveEntry?.reading ?? ""}
-                initialGloss={effectiveEntry?.gloss ?? ""}
+                initialGloss={displayGloss ?? ""}
                 initialAltWord={effectiveEntry?.traditional ?? null}
                 showReading={profileFor(lang).hasReadings}
                 hasOverride={hasOverride}
@@ -682,9 +715,9 @@ export function WordPopover({
                   setEditing(false);
                 }}
               />
-            ) : effectiveEntry?.gloss ? (
+            ) : displayGloss ? (
               <>
-                {effectiveEntry.inflectionOf && effectiveEntry.inflectionOf !== word && (
+                {effectiveEntry?.inflectionOf && effectiveEntry.inflectionOf !== word && (
                   <div className="mb-1.5 text-[11px] italic text-muted-foreground">
                     inflected form of{" "}
                     <span className="font-serif text-foreground/80 not-italic">
@@ -692,7 +725,7 @@ export function WordPopover({
                     </span>
                   </div>
                 )}
-                {effectiveEntry.gloss.split(/;\s+/).slice(0, 5).map((def, i, arr) => (
+                {displayGloss.split(/;\s+/).slice(0, 5).map((def, i, arr) => (
                   <div
                     key={i}
                     className="text-[13px] leading-relaxed text-foreground/85"
@@ -705,7 +738,12 @@ export function WordPopover({
                     {def}
                   </div>
                 ))}
-                {effectiveEntry.examples && effectiveEntry.examples.length > 0 && (
+                {effectiveEntry?.definitionEn && (
+                  <p className="mt-2 border-t border-border/40 pt-2 text-[11.5px] italic leading-snug text-muted-foreground">
+                    {effectiveEntry.definitionEn}
+                  </p>
+                )}
+                {effectiveEntry?.examples && effectiveEntry.examples.length > 0 && (
                   <div className="mt-2.5 space-y-1.5 border-t border-border/40 pt-2">
                     <p className="text-[10.5px] font-medium uppercase tracking-wider text-muted-foreground">
                       Examples
@@ -788,7 +826,7 @@ export function WordPopover({
             user installs a real dict. Renders nothing while we're
             still resolving (`hasDict === null`) so the popover doesn't
             flash on first hover. */}
-        {hasDict === false && effectiveEntry?.gloss && (
+        {hasDict === false && effectiveEntry?.gloss && !savedGloss && (
           <button
             type="button"
             onClick={() => {

@@ -151,13 +151,27 @@ function StudyView({ ctx }: StudyViewProps) {
   const [revealed, setRevealed] = useState(false);
   const [reviewedCount, setReviewedCount] = useState(0);
   const [grades, setGrades] = useState({ again: 0, hard: 0, good: 0, easy: 0 });
-  const startedAt = useMemo(() => Math.floor(Date.now() / 1000), []);
   const [paused, setPaused] = useState(false);
   const [pendingBlock, setPendingBlock] = useState<VocabEntry | null>(null);
   // Active-only time accumulator (mirrors vocab-recall + kaniwani). Stops
   // when the tab is hidden or `paused` is on so the dashboard's session
   // duration reflects real study time.
-  const getActiveSecs = useActiveSessionTime(paused);
+  const studyPaused = paused || ctx.sessionPaused;
+  const getActiveSecs = useActiveSessionTime(studyPaused);
+
+  // Keep the plugin-local overlay and the host-owned session clock in sync.
+  // The old handlers only changed `paused`, so the sidebar timer continued
+  // running and Resume could appear to do nothing.
+  function doPause() {
+    if (studyPaused) return;
+    setPaused(true);
+    ctx.pauseSession();
+  }
+  function doResume() {
+    if (!studyPaused) return;
+    setPaused(false);
+    ctx.resumeSession();
+  }
 
   // Per-card save override — initialised from the session-level toggle when
   // the queue is built. Toggling here only changes whether THIS card gets
@@ -406,7 +420,7 @@ function StudyView({ ctx }: StudyViewProps) {
   // j / ↓ : replay TTS.
   // p : pause.
   useEffect(() => {
-    if (!card || paused || pendingBlock) return;
+    if (!card || studyPaused || pendingBlock) return;
     function onKey(e: KeyboardEvent) {
       // Don't capture while the user is typing into something (notes
       // drawer, future inputs) or holding a modifier.
@@ -425,7 +439,7 @@ function StudyView({ ctx }: StudyViewProps) {
       }
       if (k === "p") {
         e.preventDefault();
-        setPaused(true);
+        doPause();
         return;
       }
       if (k === "j" || k === "arrowdown") {
@@ -452,7 +466,7 @@ function StudyView({ ctx }: StudyViewProps) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [card, paused, pendingBlock, revealed, grade, sentenceText, target, tts]);
+  }, [card, studyPaused, pendingBlock, revealed, grade, sentenceText, target, tts]);
 
   // Setup screen — gates everything until the user confirms.
   if (source == null) {
@@ -477,6 +491,7 @@ function StudyView({ ctx }: StudyViewProps) {
         drillMode={ctx.drillMode}
         setDrillMode={ctx.setDrillMode}
         srsAnchorState={ctx.srsAnchorState}
+        onBack={ctx.onChangeMode}
         onPick={(picked) => {
           setSource(picked);
           setSavedSource(picked);
@@ -519,7 +534,7 @@ function StudyView({ ctx }: StudyViewProps) {
         onSessionEnd={() =>
           ctx.onSessionEnd({
             cardsReviewed: 0,
-            durationSecs: Math.floor(Date.now() / 1000) - startedAt,
+            durationSecs: getActiveSecs(),
           })
         }
         onBack={() => setSource(null)}
@@ -534,7 +549,7 @@ function StudyView({ ctx }: StudyViewProps) {
         onLeave={() =>
           ctx.onSessionEnd({
             cardsReviewed: reviewedCount,
-            durationSecs: Math.floor(Date.now() / 1000) - startedAt,
+            durationSecs: getActiveSecs(),
             grades,
           })
         }
@@ -556,7 +571,7 @@ function StudyView({ ctx }: StudyViewProps) {
         }
         onBoost={actionBoost}
         onBlock={() => setPendingBlock(card)}
-        onPause={() => setPaused(true)}
+        onPause={doPause}
         disableBoost={!card}
       />
       <div className="flex flex-1 items-center justify-center px-6 py-6">
@@ -695,13 +710,13 @@ function StudyView({ ctx }: StudyViewProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {paused && (
+      {studyPaused && (
         <PauseOverlay
           progress={(idx / Math.max(1, queue.length)) * 100}
           done={reviewedCount}
           total={queue.length}
           elapsedSecs={getActiveSecs()}
-          onResume={() => setPaused(false)}
+          onResume={doResume}
           onEnd={() =>
             ctx.onSessionEnd({
               cardsReviewed: reviewedCount,
@@ -1074,6 +1089,7 @@ function SetupScreen({
   drillMode,
   setDrillMode,
   srsAnchorState,
+  onBack,
   onPick,
 }: {
   aiLevel: AiLevel;
@@ -1086,6 +1102,7 @@ function SetupScreen({
   drillMode: boolean;
   setDrillMode: (next: boolean) => void;
   srsAnchorState: "unknown" | "free" | "alreadyAnchored";
+  onBack?: () => void;
   onPick: (mode: SourceMode) => void;
 }) {
   const levels: { id: AiLevel; label: string; desc: string }[] = [
@@ -1122,10 +1139,11 @@ function SetupScreen({
       icon={MessageSquareQuote}
       pluginName="Sentence cards"
       title="Pick a source for tonight's deck."
-      description="Each card is one example sentence with the target word highlighted inside it. The whole deck is built up front — cards never spin loading."
+      description="Choose how sentence cards are built, how you see them, and whether shown sentences are saved back to your vocabulary."
       drillMode={drillMode}
       setDrillMode={setDrillMode}
       srsAnchorState={srsAnchorState}
+      onBack={onBack}
     >
       <div className="rounded-2xl border border-border bg-muted/30 p-4">
         <p className="mb-3 text-[12px] uppercase tracking-wider text-muted-foreground">

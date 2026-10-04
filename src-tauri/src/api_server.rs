@@ -37,6 +37,7 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use futures_util::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
+use sqlx::{QueryBuilder, Sqlite};
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::convert::Infallible;
 use tauri::{AppHandle, Emitter};
@@ -344,6 +345,7 @@ fn build_router(state: AppState) -> Router {
             get(list_collection_words).post(add_words_to_collection),
         )
         .route("/dict/search", get(search_dict))
+        .route("/dict/import", post(import_dictionary))
         .route("/tokenize", post(tokenize))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state.clone(), auth_layer))
@@ -512,6 +514,10 @@ struct VocabQuery {
     status: Option<String>,
     q: Option<String>,
     limit: Option<i64>,
+    /// Zero-based offset for local maintenance/import clients. The desktop
+    /// UI normally only needs the first page, while repair tools can walk the
+    /// full workspace without guessing at a private database schema.
+    offset: Option<i64>,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -521,6 +527,9 @@ struct VocabEntry {
     word: String,
     reading: Option<String>,
     gloss: Option<String>,
+    kind: String,
+    card_notes: Option<String>,
+    translation: Option<String>,
     status: String,
     added_at: i64,
 }
@@ -533,6 +542,7 @@ async fn list_vocab(
     // Cap limits server-side. A buggy client asking for limit=1_000_000 should
     // not cause us to allocate a giant Vec.
     let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    let offset = q.offset.unwrap_or(0).max(0).min(1_000_000);
 
     // Build a small dynamic WHERE — kept inline (and parameterised) rather than
     // pulled into a query builder. sqlx requires constant SQL strings for the
@@ -543,7 +553,8 @@ async fn list_vocab(
     // `list_workspaces` goal_level bug — keep SELECTs aligned with the
     // real vocab_entries schema in lib.rs.
     let mut sql = String::from(
-        "SELECT id, workspace_id, word, reading, gloss, status, created_at AS added_at
+        "SELECT id, workspace_id, word, reading, gloss, kind, card_notes,
+                translation, status, created_at AS added_at
      FROM vocab_entries
      WHERE workspace_id = ?",
     );
@@ -553,7 +564,7 @@ async fn list_vocab(
     if q.q.is_some() {
         sql.push_str(" AND (word LIKE ? OR gloss LIKE ? OR reading LIKE ?)");
     }
-    sql.push_str(" ORDER BY created_at DESC LIMIT ?");
+    sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
 
     let mut query = sqlx::query_as::<_, VocabEntry>(&sql).bind(ws_id);
     if let Some(s) = &q.status {
@@ -563,7 +574,7 @@ async fn list_vocab(
         let like = format!("%{}%", needle);
         query = query.bind(like.clone()).bind(like.clone()).bind(like);
     }
-    query = query.bind(limit);
+    query = query.bind(limit).bind(offset);
 
     let rows = query.fetch_all(&state.pool).await.map_err(|e| {
         log::error!("list_vocab: {e}");
@@ -573,9 +584,10 @@ async fn list_vocab(
             "Failed to list vocabulary.",
         )
     })?;
+    let next_cursor = (rows.len() as i64 == limit).then(|| (offset + limit).to_string());
     Ok(Json(Page {
         data: rows,
-        next_cursor: None,
+        next_cursor,
     }))
 }
 
@@ -687,6 +699,186 @@ async fn search_dict(
         data: rows,
         next_cursor: None,
     }))
+}
+
+/// Import a complete local dictionary pack through the authenticated Local
+/// API. This is intentionally the same storage contract as the desktop
+/// Settings → Custom dictionary importer: callers send already-parsed
+/// `{word, reading, gloss}` rows, and a repeated `(lang, name)` replaces the
+/// previous pack atomically. The endpoint is loopback-only and bearer-token
+/// protected, so external scripts never open or write tokori.db themselves.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DictionaryImportEntry {
+    word: String,
+    alt_word: Option<String>,
+    reading: Option<String>,
+    gloss: String,
+    pitch_accent: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DictionaryImportRequest {
+    lang: String,
+    name: String,
+    source_url: Option<String>,
+    entries: Vec<DictionaryImportEntry>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DictionaryImportResponse {
+    id: i64,
+    lang: String,
+    name: String,
+    entry_count: usize,
+    replaced: bool,
+}
+
+async fn import_dictionary(
+    State(state): State<AppState>,
+    Json(body): Json<DictionaryImportRequest>,
+) -> Result<(StatusCode, Json<DictionaryImportResponse>), Response> {
+    let lang = body.lang.trim();
+    let name = body.name.trim();
+    if lang.is_empty() || name.is_empty() {
+        return Err(err_response(
+            StatusCode::BAD_REQUEST,
+            "validation.dictionary",
+            "lang and name are required.",
+        ));
+    }
+    if body.entries.is_empty() {
+        return Err(err_response(
+            StatusCode::BAD_REQUEST,
+            "validation.dictionary_entries",
+            "entries must not be empty.",
+        ));
+    }
+    if body.entries.len() > 250_000 {
+        return Err(err_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "validation.dictionary_size",
+            "A single dictionary import may contain at most 250,000 entries.",
+        ));
+    }
+    if body
+        .entries
+        .iter()
+        .any(|entry| entry.word.trim().is_empty() || entry.gloss.trim().is_empty())
+    {
+        return Err(err_response(
+            StatusCode::BAD_REQUEST,
+            "validation.dictionary_entry",
+            "Every dictionary entry requires a non-empty word and gloss.",
+        ));
+    }
+
+    let mut tx = state.pool.begin().await.map_err(|e| {
+        log::error!("import_dictionary begin: {e}");
+        err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal.unexpected",
+            "Could not start dictionary import.",
+        )
+    })?;
+
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM dictionaries WHERE lang = ? AND name = ?",
+    )
+    .bind(lang)
+    .bind(name)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| {
+        log::error!("import_dictionary lookup: {e}");
+        err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal.unexpected",
+            "Could not inspect the existing dictionary.",
+        )
+    })?;
+    let replaced = existing.is_some();
+
+    let dict_id: i64 = sqlx::query_scalar(
+        "INSERT INTO dictionaries (lang, name, source_url, entry_count)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(lang, name) DO UPDATE SET
+           source_url = excluded.source_url,
+           installed_at = strftime('%s','now'),
+           entry_count = excluded.entry_count
+         RETURNING id",
+    )
+    .bind(lang)
+    .bind(name)
+    .bind(body.source_url.as_deref())
+    .bind(body.entries.len() as i64)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|e| {
+        log::error!("import_dictionary upsert: {e}");
+        err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal.unexpected",
+            "Could not create the dictionary record.",
+        )
+    })?;
+
+    sqlx::query("DELETE FROM dict_entries WHERE dict_id = ?")
+        .bind(dict_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            log::error!("import_dictionary clear: {e}");
+            err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal.unexpected",
+                "Could not replace the previous dictionary entries.",
+            )
+        })?;
+
+    for chunk in body.entries.chunks(500) {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO dict_entries (dict_id, word, alt_word, reading, gloss, pitch_accent) ",
+        );
+        query.push_values(chunk, |mut row, entry| {
+            row.push_bind(dict_id)
+                .push_bind(entry.word.trim())
+                .push_bind(entry.alt_word.as_deref())
+                .push_bind(entry.reading.as_deref())
+                .push_bind(entry.gloss.trim())
+                .push_bind(entry.pitch_accent);
+        });
+        query.build().execute(&mut *tx).await.map_err(|e| {
+            log::error!("import_dictionary insert: {e}");
+            err_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal.unexpected",
+                "Could not insert dictionary entries.",
+            )
+        })?;
+    }
+
+    tx.commit().await.map_err(|e| {
+        log::error!("import_dictionary commit: {e}");
+        err_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal.unexpected",
+            "Could not commit dictionary import.",
+        )
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(DictionaryImportResponse {
+            id: dict_id,
+            lang: lang.to_string(),
+            name: name.to_string(),
+            entry_count: body.entries.len(),
+            replaced,
+        }),
+    ))
 }
 
 // ── Tokenize ─────────────────────────────────────────────────────────
@@ -847,6 +1039,12 @@ struct CreateVocabBody {
     /// Free-form notes (mnemonics, translations, etymology) shown on
     /// the back of the card.
     card_notes: Option<String>,
+    /// Native-language translation for a sentence card. Kept separate from
+    /// `gloss`, which is the target-language sentence on imported cards.
+    /// This is intentionally accepted by the Local API's existing upsert
+    /// route so maintenance clients can enrich an existing row without
+    /// touching SQLite directly.
+    translation: Option<String>,
     /// Card image. Accepts either a data URL (`data:image/png;base64,…`)
     /// or a bare base64 string — the handler keeps whatever's sent
     /// since the desktop's `vocab_entries.image_data` is a TEXT column
@@ -933,6 +1131,7 @@ async fn apply_vocab_mining_fields(
     let kind = non_empty(&body.kind);
     let front_extra = non_empty(&body.front_extra);
     let card_notes = non_empty(&body.card_notes);
+    let translation = non_empty(&body.translation);
     let image_data = non_empty(&body.image_data);
     let audio_data_b64 = non_empty(&body.audio_data);
     let audio_mime = non_empty(&body.audio_mime);
@@ -941,6 +1140,7 @@ async fn apply_vocab_mining_fields(
     if kind.is_none()
         && front_extra.is_none()
         && card_notes.is_none()
+        && translation.is_none()
         && image_data.is_none()
         && audio_data_b64.is_none()
     {
@@ -998,6 +1198,22 @@ async fn apply_vocab_mining_fields(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal.unexpected",
                     "Failed to patch card_notes.",
+                )
+            })?;
+    }
+
+    if let Some(v) = translation {
+        sqlx::query("UPDATE vocab_entries SET translation = ? WHERE id = ?")
+            .bind(v)
+            .bind(vocab_id)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                log::error!("apply_vocab_mining_fields translation: {e}");
+                err_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal.unexpected",
+                    "Failed to patch translation.",
                 )
             })?;
     }
@@ -2049,7 +2265,8 @@ async fn list_collection_words(
     axum::extract::Path(cid): axum::extract::Path<i64>,
 ) -> Result<Json<Page<VocabEntry>>, Response> {
     let rows = sqlx::query_as::<_, VocabEntry>(
-        "SELECT v.id, v.workspace_id, v.word, v.reading, v.gloss, v.status, v.created_at AS added_at
+        "SELECT v.id, v.workspace_id, v.word, v.reading, v.gloss, v.kind,
+                v.card_notes, v.translation, v.status, v.created_at AS added_at
      FROM collection_words cw
      JOIN vocab_entries v ON v.id = cw.vocab_id
      WHERE cw.collection_id = ?

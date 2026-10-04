@@ -6,6 +6,13 @@ export type ExampleSentence = { target: string; native: string };
 export type LookupResult = {
   reading: string | null;
   gloss: string;
+  /** Collins-style grammatical label, e.g. "N-COUNT 可数名词". */
+  partOfSpeech?: string | null;
+  /** Optional English learner-dictionary definition. */
+  definitionEn?: string | null;
+  /** Optional accent-specific IPA carried by an imported dictionary. */
+  readingUs?: string | null;
+  readingUk?: string | null;
   /** Traditional-Chinese headword, when the dictionary carries one.
    *  CC-CEDICT stores both forms; this is the entry's `altWord`. The
    *  click-to-define popover renders this as the headword when the
@@ -34,6 +41,54 @@ export function fromMini(word: string): LookupResult | null {
   return e ? { reading: e.pinyin, gloss: e.gloss } : null;
 }
 
+/**
+ * Extra structured fields for imported dictionaries are carried inside the
+ * existing `dict_entries.gloss` column. This keeps the database migration-free
+ * for custom dictionaries while preserving the old DictEntry wire shape.
+ * The marker is internal and is removed before anything is shown to learners.
+ */
+export const DICTIONARY_META_KEY = "TOKORI_DICT_META_V1";
+
+export type DictionaryMeta = {
+  partOfSpeech?: string | null;
+  definitionEn?: string | null;
+  readingUs?: string | null;
+  readingUk?: string | null;
+};
+
+export function encodeDictionaryGloss(
+  gloss: string,
+  meta?: DictionaryMeta,
+  examples?: ExampleSentence[],
+): string {
+  const cleanMeta = Object.fromEntries(
+    Object.entries(meta ?? {}).filter(([, value]) => typeof value === "string" && value.trim()),
+  );
+  const base = gloss.trim();
+  const exampleBlock = (examples ?? [])
+    .filter((e) => e?.target?.trim())
+    .map((e) => `• ${e.target.trim()} — ${(e.native ?? "").trim()}`.trimEnd())
+    .join("\n");
+  const withExamples = exampleBlock
+    ? `${base}${EXAMPLES_DELIMITER}${exampleBlock}`
+    : base;
+  return Object.keys(cleanMeta).length > 0
+    ? `${DICTIONARY_META_KEY}${JSON.stringify(cleanMeta)}\n${withExamples}`
+    : withExamples;
+}
+
+function unpackDictionaryGloss(raw: string): { body: string; meta: DictionaryMeta } {
+  if (!raw.startsWith(DICTIONARY_META_KEY)) return { body: raw, meta: {} };
+  const newline = raw.indexOf("\n", DICTIONARY_META_KEY.length);
+  if (newline < 0) return { body: raw, meta: {} };
+  try {
+    const parsed = JSON.parse(raw.slice(DICTIONARY_META_KEY.length, newline)) as DictionaryMeta;
+    return { body: raw.slice(newline + 1), meta: parsed ?? {} };
+  } catch {
+    return { body: raw, meta: {} };
+  }
+}
+
 // Marker we use to round-trip examples through the dict's `gloss`
 // column (which is the only text field we have on dict_entries — no
 // schema migration needed). The popover splits on this back out so
@@ -44,11 +99,22 @@ export const EXAMPLES_DELIMITER = "\n\n— examples —\n";
 export function parseGlossWithExamples(gloss: string): {
   gloss: string;
   examples: ExampleSentence[];
+  partOfSpeech?: string | null;
+  definitionEn?: string | null;
+  readingUs?: string | null;
+  readingUk?: string | null;
 } {
-  const idx = gloss.indexOf(EXAMPLES_DELIMITER);
-  if (idx === -1) return { gloss, examples: [] };
-  const head = gloss.slice(0, idx).trim();
-  const tail = gloss.slice(idx + EXAMPLES_DELIMITER.length);
+  const unpacked = unpackDictionaryGloss(gloss);
+  const idx = unpacked.body.indexOf(EXAMPLES_DELIMITER);
+  if (idx === -1) {
+    return {
+      gloss: unpacked.body,
+      examples: [],
+      ...unpacked.meta,
+    };
+  }
+  const head = unpacked.body.slice(0, idx).trim();
+  const tail = unpacked.body.slice(idx + EXAMPLES_DELIMITER.length);
   const examples: ExampleSentence[] = [];
   for (const line of tail.split("\n")) {
     const t = line.replace(/^[•\-*\s]+/, "").trim();
@@ -62,14 +128,19 @@ export function parseGlossWithExamples(gloss: string): {
       examples.push({ target: t, native: "" });
     }
   }
-  return { gloss: head, examples };
+  return { gloss: head, examples, ...unpacked.meta };
 }
 
 export function fromDict(e: DictEntry): LookupResult {
-  const { gloss, examples } = parseGlossWithExamples(e.gloss);
+  const { gloss, examples, partOfSpeech, definitionEn, readingUs, readingUk } =
+    parseGlossWithExamples(e.gloss);
   return {
     reading: e.reading,
     gloss,
+    partOfSpeech,
+    definitionEn,
+    readingUs,
+    readingUk,
     traditional: e.altWord,
     examples: examples.length > 0 ? examples : undefined,
     inflectionOf: e.inflectionOf,

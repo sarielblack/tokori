@@ -152,6 +152,10 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
   const [showRedeemPack, setShowRedeemPack] = useState(false);
   const [layout, setLayout] = useState<DashboardLayout | null>(null);
   const [editMode, setEditMode] = useState(false);
+  // Home is intentionally a study queue first. Keep the configurable
+  // analytics dashboard available behind a small escape hatch, but do not
+  // make the user pass through charts and statistics before today's cards.
+  const [showDashboard, setShowDashboard] = useState(false);
   // Pull the live registry so widgets registered after mount (e.g. by
   // a future plugin loader) show up in the picker without a reload.
   const widgets = useWidgetRegistry();
@@ -330,7 +334,20 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
             <h1 className="font-serif text-4xl tracking-tight">{greeting}</h1>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {editMode ? (
+            {showDashboard && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setEditMode(false);
+                  setShowDashboard(false);
+                }}
+              >
+                <BookOpenText className="size-3.5" />
+                Today
+              </Button>
+            )}
+            {showDashboard && editMode ? (
               <>
                 <AddWidgetPopover
                   available={availableToAdd}
@@ -350,7 +367,7 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
                   Done
                 </Button>
               </>
-            ) : (
+            ) : showDashboard ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -360,18 +377,32 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
                 <LayoutDashboard className="size-3.5" />
                 Edit dashboard
               </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowDashboard(true)}
+                title="Open dashboard statistics"
+              >
+                <LayoutDashboard className="size-3.5" />
+                Dashboard
+              </Button>
             )}
           </div>
         </div>
 
-        <DashboardGrid
-          slots={renderableSlots}
-          editMode={editMode}
-          ctx={ctx}
-          onMove={moveWidget}
-          onResize={resizeWidget}
-          onRemove={removeWidget}
-        />
+        {showDashboard ? (
+          <DashboardGrid
+            slots={renderableSlots}
+            editMode={editMode}
+            ctx={ctx}
+            onMove={moveWidget}
+            onResize={resizeWidget}
+            onRemove={removeWidget}
+          />
+        ) : (
+          <TodayStudyHome ctx={ctx} onNavigate={onNavigate} />
+        )}
       </div>
     </div>
     <LogActivityDialog
@@ -396,6 +427,136 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
       }}
     />
     </>
+  );
+}
+
+function TodayStudyHome({
+  ctx,
+  onNavigate,
+}: {
+  ctx: WidgetContext;
+  onNavigate: (t: TabId) => void;
+}) {
+  const queue = ctx.sessionQueue;
+  const newCount = queue.filter((card) => card.status === "new").length;
+  const reviewCount = queue.length - newCount;
+  const preview = queue.slice(0, 24);
+
+  return (
+    <div className="space-y-7">
+      <section className="overflow-hidden rounded-[28px] border border-border/60 bg-card/55 p-6 shadow-sm backdrop-blur-xl sm:p-8">
+        <div className="flex flex-col justify-between gap-7 sm:flex-row sm:items-end">
+          <div className="max-w-xl">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary/80">
+              Today&apos;s study
+            </p>
+            <h2 className="mt-2 font-serif text-4xl tracking-tight sm:text-5xl">
+              A small step is enough.
+            </h2>
+            <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+              Your queue is ready. Focus on the cards in front of you and leave
+              the long-term numbers for another day.
+            </p>
+          </div>
+          <Button
+            size="lg"
+            onClick={() => onNavigate("flashcards")}
+            className="shrink-0 rounded-full px-6 shadow-sm"
+          >
+            Start studying
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+
+        <div className="mt-7 grid grid-cols-3 gap-2 sm:max-w-xl sm:gap-3">
+          <TodayQueueStat label="Due" value={reviewCount} />
+          <TodayQueueStat label="New" value={newCount} />
+          <TodayQueueStat label="Total" value={queue.length} />
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-3 flex items-end justify-between gap-4 px-1">
+          <div>
+            <h2 className="font-serif text-2xl tracking-tight">Today&apos;s cards</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {queue.length === 0
+                ? "Nothing is due right now."
+                : `A paced selection from your ${queue.length} cards for today.`}
+            </p>
+          </div>
+          {queue.length > preview.length && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onNavigate("flashcards")}
+              className="shrink-0 text-xs"
+            >
+              View all
+              <ArrowRight className="size-3.5" />
+            </Button>
+          )}
+        </div>
+
+        {preview.length > 0 ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {preview.map((card) => (
+              <button
+                key={card.id}
+                type="button"
+                onClick={() => onNavigate("flashcards")}
+                className="group min-w-0 rounded-2xl border border-border/60 bg-card/45 p-4 text-left shadow-sm backdrop-blur-md transition-colors hover:border-primary/40 hover:bg-card/70"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className="min-w-0 break-words font-serif text-xl tracking-tight">
+                    {card.word}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider",
+                      card.status === "new"
+                        ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                        : "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
+                    )}
+                  >
+                    {card.status === "new" ? "New" : "Due"}
+                  </span>
+                </div>
+                {card.reading && (
+                  <p className="mt-1 text-xs text-muted-foreground">{card.reading}</p>
+                )}
+                <p className="mt-3 line-clamp-2 text-sm leading-relaxed text-foreground/80">
+                  {card.gloss || "No meaning added yet"}
+                </p>
+                <div className="mt-4 flex items-center justify-end text-[11px] text-muted-foreground transition-colors group-hover:text-foreground">
+                  Study this card
+                  <ArrowRight className="ml-1 size-3" />
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-dashed border-border/70 bg-card/35 px-6 py-12 text-center backdrop-blur-md">
+            <BookMarked className="mx-auto size-7 text-muted-foreground/70" />
+            <p className="mt-3 text-sm font-medium">You&apos;re all caught up.</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Add a word or open Flashcards when you want to practice again.
+            </p>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function TodayQueueStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-2xl border border-border/50 bg-background/25 px-4 py-3 backdrop-blur-sm">
+      <p className="text-2xl font-semibold tabular-nums tracking-tight">{value}</p>
+      <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+    </div>
   );
 }
 

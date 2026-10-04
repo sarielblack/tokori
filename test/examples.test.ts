@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  legacyNotesRemainder,
   parseExamples,
+  parseMorphology,
   pickSavedExample,
   serialiseExamples,
+  serialiseExamplesWithMorphology,
   EXAMPLE_KEY,
   type ExampleSentence,
 } from "@/lib/examples";
@@ -19,6 +22,20 @@ describe("examples — parseExamples", () => {
     // still parse cleanly to "no examples", not blow up.
     expect(parseExamples("just some user notes")).toEqual([]);
     expect(parseExamples("[]")).toEqual([]);
+  });
+
+  it("reads the legacy Example: text form without treating ordinary notes as examples", () => {
+    const parsed = parseExamples(
+      "Example: The API contract must remain backward compatible.\nOwner: platform",
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.target).toBe(
+      "The API contract must remain backward compatible.",
+    );
+    expect(parsed[0]?.source).toBe("user");
+    expect(legacyNotesRemainder("Example: one\nA separate note")).toBe(
+      "A separate note",
+    );
   });
 
   it("returns an empty array for malformed JSON", () => {
@@ -46,6 +63,75 @@ describe("examples — parseExamples", () => {
     const wire = serialiseExamples(original);
     expect(wire.startsWith(EXAMPLE_KEY)).toBe(true);
     expect(parseExamples(wire)).toEqual(original);
+  });
+
+  it("deduplicates the same sentence while retaining a later translation", () => {
+    const wire = serialiseExamples([
+      { id: "1", target: "The rollout is blocked.", source: "ai" },
+      {
+        id: "2",
+        target: "The rollout is blocked.",
+        native: "发布被阻塞。",
+        source: "user",
+      },
+    ]);
+    expect(parseExamples(wire)).toEqual([
+      {
+        id: "2",
+        target: "The rollout is blocked.",
+        native: "发布被阻塞。",
+        source: "user",
+      },
+    ]);
+  });
+
+  it("keeps morphology appended after the examples JSON", () => {
+    const wire = serialiseExamplesWithMorphology(
+      [{ id: "1", target: "The system is resilient.", source: "ai" }],
+      {
+        root: "resil",
+        components: ["resil", "-ent"],
+        prefixes: [],
+        suffixes: ["-ent"],
+        family: ["resilience", "resilient"],
+        note: "与 resist 同源的学习提示。",
+      },
+    );
+    expect(parseExamples(wire)).toHaveLength(1);
+    expect(parseMorphology(wire)).toEqual({
+      root: "resil",
+      components: ["resil", "-ent"],
+      suffixes: ["-ent"],
+      family: ["resilience", "resilient"],
+      note: "与 resist 同源的学习提示。",
+    });
+  });
+
+  it("round-trips dictionary-derived Collins affix references", () => {
+    const wire = serialiseExamplesWithMorphology(
+      [{ id: "1", target: "The platform is reusable.", source: "ai" }],
+      {
+        prefixes: ["re-"],
+        dictionaryAffixes: [
+          {
+            affix: "re-",
+            type: "prefix",
+            meaningZh: "再；重新",
+            definitionEn: "again; back",
+            exampleEn: "rebuild the service",
+          },
+        ],
+      },
+    );
+    expect(parseMorphology(wire)?.dictionaryAffixes).toEqual([
+      {
+        affix: "re-",
+        type: "prefix",
+        meaningZh: "再；重新",
+        definitionEn: "again; back",
+        exampleEn: "rebuild the service",
+      },
+    ]);
   });
 });
 
