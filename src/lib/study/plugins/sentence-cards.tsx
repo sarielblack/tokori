@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowLeft,
   Bookmark,
   BookmarkCheck,
   Library,
@@ -19,7 +20,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SpeakButton } from "@/components/speak-button";
 import { Tokenized } from "@/components/tokenized";
@@ -106,6 +106,11 @@ function StudyView({ ctx }: StudyViewProps) {
   const { active: provider, sendChat } = useProviderConfigs();
   const tts = useTTS();
   const [autoPlay] = usePluginSetting(PLUGIN_ID, "autoPlay", true);
+  const [showKeyboardHints] = usePluginSetting(
+    PLUGIN_ID,
+    "showKeyboardHints",
+    false,
+  );
   const [savedSource, setSavedSource] = usePluginSetting<SourceMode | null>(
     PLUGIN_ID,
     "source",
@@ -423,7 +428,7 @@ function StudyView({ ctx }: StudyViewProps) {
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────
   // Space / Enter / → / l : reveal, then grade Good.
-  // 1 / a, 2 / s, 3 / d, 4 / f : direct grade.
+  // 1 / a : unfamiliar (Again); 2 / d : familiar (Good).
   // j / ↓ : replay TTS.
   // p : pause.
   useEffect(() => {
@@ -460,15 +465,9 @@ function StudyView({ ctx }: StudyViewProps) {
       if (k === "1" || k === "a") {
         e.preventDefault();
         void grade("again");
-      } else if (k === "2" || k === "s") {
-        e.preventDefault();
-        void grade("hard");
-      } else if (k === "3" || k === "d") {
+      } else if (k === "2" || k === "d") {
         e.preventDefault();
         void grade("good");
-      } else if (k === "4" || k === "f") {
-        e.preventDefault();
-        void grade("easy");
       }
     }
     window.addEventListener("keydown", onKey);
@@ -574,25 +573,23 @@ function StudyView({ ctx }: StudyViewProps) {
       <TopActionBar
         idx={idx}
         total={queue.length}
-        sourceBadge={source === "ai" ? `AI · ${aiLevel}` : "library"}
-        directionBadge={
-          direction === "recognition" ? `${target} → ${native}` : `${native} → ${target}`
-        }
+        onBack={ctx.onChangeMode}
         onBoost={actionBoost}
         onBlock={() => setPendingBlock(card)}
         onPause={doPause}
         disableBoost={!card}
       />
-      <div className="flex flex-1 items-center justify-center px-6 py-6">
-        <div className="relative w-full max-w-xl">
+      <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-3 sm:px-6 sm:py-4">
+        <div className="relative my-auto mx-auto w-full max-w-4xl">
           {target === "zh" && (
-            <div className="mb-2 flex justify-end">
+            <div className="mb-2 flex justify-end px-2 sm:px-6">
               <PinyinToggle on={showRuby} onChange={setShowRuby} />
             </div>
           )}
-          <div className="block w-full rounded-2xl border border-border bg-card px-6 py-10 shadow-sm transition-all">
+          <div className="relative block w-full px-2 py-8 text-left sm:px-6 sm:py-10">
             {missing ? (
               <MissingFallback
+                card={card}
                 source={source}
                 canGenerate={!!provider}
                 generating={generatingId === card.id}
@@ -627,7 +624,7 @@ function StudyView({ ctx }: StudyViewProps) {
           </div>
 
           {!missing && (
-            <div className="mt-3 flex items-center justify-end gap-2">
+            <div className="mt-2 flex items-center justify-end px-2 sm:px-6">
               <SaveToggle
                 on={cardSaveOn}
                 onChange={(v) =>
@@ -637,41 +634,16 @@ function StudyView({ ctx }: StudyViewProps) {
             </div>
           )}
 
-          <div className="mt-4 grid grid-cols-4 gap-2">
-            <GradeButton
-              disabled={missing ? false : !revealed}
-              label="Again"
-              hint="<1m"
-              accent="bg-rose-500/10 text-rose-700 dark:text-rose-400"
-              onClick={() => void grade("again")}
-            />
-            <GradeButton
-              disabled={missing ? false : !revealed}
-              label="Hard"
-              hint="~1d"
-              accent="bg-amber-500/10 text-amber-700 dark:text-amber-400"
-              onClick={() => void grade("hard")}
-            />
-            <GradeButton
-              disabled={missing ? false : !revealed}
-              label="Good"
-              hint="~3d"
-              accent="bg-sky-500/10 text-sky-700 dark:text-sky-400"
-              onClick={() => void grade("good")}
-            />
-            <GradeButton
-              disabled={missing ? false : !revealed}
-              label="Easy"
-              hint="1w+"
-              accent="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-              onClick={() => void grade("easy")}
-            />
-          </div>
+          <SentenceFamiliarityRow
+            disabled={missing ? false : !revealed}
+            onUnfamiliar={() => void grade("again")}
+            onFamiliar={() => void grade("good")}
+          />
           <p className="mt-3 text-center text-[11px] text-muted-foreground">
             {missing
-              ? "No sentence — grade from memory or skip"
+              ? "Use the word card below, or generate a sentence when available"
               : revealed
-                ? "Grade how well you understood it"
+                ? "How familiar did this sentence feel?"
                 : direction === "recognition"
                   ? "Listen, read, then reveal the translation"
                   : "Read, think of the target sentence, then reveal"}
@@ -681,7 +653,7 @@ function StudyView({ ctx }: StudyViewProps) {
 
       {/* Keyboard cheatsheet — bottom-right corner, mirrors vocab-recall.
           Hidden on small screens where there's no keyboard anyway. */}
-      <KeyboardHintBar revealed={revealed} />
+      {showKeyboardHints && <KeyboardHintBar revealed={revealed} />}
 
       {/* Block confirmation. Kept mounted across card changes via
           `pendingBlock` so the dialog stays steady when boost / advance
@@ -760,33 +732,33 @@ function RecognitionView({
 }) {
   return (
     <>
-      <div className="relative">
-        <div className="absolute right-0 top-0 z-10">
-          <SpeakButton text={sentence} lang={targetLang} />
-        </div>
-        <div className="study-sentence-target pr-9 text-[22px] leading-relaxed">
+      <div className="relative max-w-4xl">
+        <div className="flex items-start gap-3">
+          <div className="study-sentence-target min-w-0 flex-1 text-[clamp(1.5rem,3vw,2.75rem)] font-medium leading-[1.35] tracking-[-0.02em]">
           <Tokenized
             text={sentence}
             lang={targetLang}
             showRuby={showRuby}
             activeRange={targetRange}
           />
+          </div>
+          <SpeakButton text={sentence} lang={targetLang} size="xs" className="mt-1 shrink-0" />
         </div>
         {sourceTitle && (
-          <p className="mt-3 text-[11px] text-muted-foreground">From {sourceTitle}</p>
+          <p className="mt-4 text-[11px] text-muted-foreground">From {sourceTitle}</p>
         )}
       </div>
       {revealed ? (
-        <div className="mt-6 border-t border-border pt-4">
-          <p className="text-[15px] leading-relaxed">
+        <div className="mt-8 max-w-3xl border-t border-border/60 pt-5">
+          <p className="text-[17px] leading-relaxed text-foreground/90">
             {translation ?? (
               <em className="text-muted-foreground">No translation available</em>
             )}
           </p>
         </div>
       ) : (
-        <div className="mt-6 flex justify-center">
-          <Button variant="outline" onClick={onReveal}>
+        <div className="mt-7 flex justify-start">
+          <Button variant="ghost" size="sm" onClick={onReveal} className="rounded-full px-3">
             Show translation
           </Button>
         </div>
@@ -814,7 +786,7 @@ function ProductionView({
 }) {
   return (
     <>
-      <p className="text-[20px] leading-relaxed">
+      <p className="max-w-3xl text-[18px] leading-relaxed text-foreground/90">
         {translation ?? (
           <em className="text-muted-foreground">
             No native translation — try the recognition direction.
@@ -838,8 +810,8 @@ function ProductionView({
           </div>
         </div>
       ) : (
-        <div className="mt-6 flex justify-center">
-          <Button variant="outline" onClick={onReveal}>
+        <div className="mt-7 flex justify-start">
+          <Button variant="ghost" size="sm" onClick={onReveal} className="rounded-full px-3">
             Reveal target sentence
           </Button>
         </div>
@@ -877,8 +849,7 @@ function PinyinToggle({
 function TopActionBar({
   idx,
   total,
-  sourceBadge,
-  directionBadge,
+  onBack,
   onBoost,
   onBlock,
   onPause,
@@ -886,32 +857,30 @@ function TopActionBar({
 }: {
   idx: number;
   total: number;
-  sourceBadge: string;
-  directionBadge: string;
+  onBack?: () => void;
   onBoost: () => void;
   onBlock: () => void;
   onPause: () => void;
   disableBoost?: boolean;
 }) {
-  const progress = (idx / Math.max(1, total)) * 100;
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="border-b border-border px-6 pt-2 pb-3">
-        <div className="flex w-full items-center gap-4">
-          <p className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+      <div className="pointer-events-auto absolute inset-x-0 top-0 z-20 flex justify-between px-4 pt-3 opacity-80 transition-opacity hover:opacity-100 focus-within:opacity-100 sm:px-6">
+        <div className="flex items-center gap-1 rounded-full border border-border/40 bg-background/35 px-2 py-1 backdrop-blur-md">
+          <button
+            type="button"
+            onClick={onBack}
+            disabled={!onBack}
+            title="Back to study modes"
+            className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+          >
+            <ArrowLeft className="size-4" />
+          </button>
+          <p className="shrink-0 rounded-full px-1 text-[11px] tabular-nums text-muted-foreground">
             {idx + 1} / {total}
           </p>
-          <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
-            <span className="rounded-full bg-foreground/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-              {sourceBadge}
-            </span>
-            <span className="rounded-full bg-foreground/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-              {directionBadge}
-            </span>
-          </span>
-          <div className="flex-1">
-            <Progress value={progress} />
-          </div>
+        </div>
+        <div className="rounded-full border border-border/40 bg-background/35 px-2 py-1 backdrop-blur-md">
           <SessionTopBarControls
             onBoost={onBoost}
             onNeverAgain={onBlock}
@@ -942,13 +911,11 @@ function KeyboardHintBar({ revealed }: { revealed: boolean }) {
       ) : (
         <>
           <div className="flex items-center gap-1">
-            <KeyChip k={["1", "a"]} label="again" tone="rose" />
-            <KeyChip k={["2", "s"]} label="hard" tone="amber" />
-            <KeyChip k={["3", "d"]} label="good" tone="sky" />
-            <KeyChip k={["4", "f"]} label="easy" tone="emerald" />
+            <KeyChip k={["1", "a"]} label="不熟" />
+            <KeyChip k={["2", "d"]} label="熟" />
           </div>
           <div className="flex items-center gap-1">
-            <KeyChip k={["⏎", "l"]} label="good" tone="sky" />
+            <KeyChip k={["⏎", "l"]} label="熟" />
             <KeyChip k={["↓", "j"]} label="audio" />
           </div>
         </>
@@ -1014,10 +981,10 @@ function SaveToggle({
       type="button"
       onClick={() => onChange(!on)}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] font-medium transition-colors",
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[11px] transition-colors",
         on
-          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-400"
-          : "border-border bg-card text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+          ? "text-foreground/75 hover:bg-foreground/5"
+          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
       )}
       title={
         on
@@ -1041,12 +1008,14 @@ function SaveToggle({
 }
 
 function MissingFallback({
+  card,
   source,
   canGenerate,
   generating,
   onGenerate,
   onSkip,
 }: {
+  card: VocabEntry;
   source: SourceMode;
   canGenerate: boolean;
   generating: boolean;
@@ -1054,35 +1023,64 @@ function MissingFallback({
   onSkip: () => void;
 }) {
   return (
-    <div className="space-y-3 text-center">
-      <p className="text-[13px] text-muted-foreground">
-        {source === "library"
-          ? "No matching sentence in your library yet."
-          : "The AI didn't produce a usable sentence for this card."}
-      </p>
-      <div className="flex justify-center gap-2">
-        {canGenerate && (
-          <Button size="sm" onClick={onGenerate} disabled={generating}>
-            {generating ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="size-3.5" />
-            )}
-            {generating ? "Generating…" : "Generate with AI"}
-          </Button>
-        )}
-        <Button variant="outline" size="sm" onClick={onSkip} disabled={generating}>
-          Skip
-        </Button>
-      </div>
-      {!canGenerate && (
-        <p className="text-[11px] leading-relaxed text-muted-foreground/70">
-          Add an AI provider in Settings → Providers to generate one
-          {source === "library"
-            ? ", or read / save more text containing this word."
-            : "."}
+    <div className="max-w-3xl space-y-7">
+      <div>
+        <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+          Word card fallback
         </p>
-      )}
+        <h2 className="mt-3 font-sans text-[clamp(3.25rem,8vw,6rem)] font-semibold leading-none tracking-[-0.045em]">
+          {card.word}
+        </h2>
+        {card.reading && (
+          <p className="mt-4 text-[15px] tracking-wide text-muted-foreground">
+            {card.reading}
+          </p>
+        )}
+        <p className="mt-6 max-w-2xl text-[17px] leading-relaxed text-foreground/90">
+          {card.gloss || card.translation || "No saved definition yet."}
+        </p>
+      </div>
+      <div className="max-w-xl border-t border-border/60 pt-5">
+        <p className="text-[13px] text-muted-foreground">
+          {source === "library"
+            ? "No matching sentence in your library yet."
+            : "The AI didn't produce a usable sentence for this card."}
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {canGenerate && (
+            <Button
+              size="sm"
+              onClick={onGenerate}
+              disabled={generating}
+              className="rounded-full"
+            >
+              {generating ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="size-3.5" />
+              )}
+              {generating ? "Generating…" : "Generate with AI"}
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onSkip}
+            disabled={generating}
+            className="rounded-full"
+          >
+            Skip sentence
+          </Button>
+        </div>
+        {!canGenerate && (
+          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground/70">
+            Add an AI provider in Settings → Providers to generate one
+            {source === "library"
+              ? ", or read / save more text containing this word."
+              : "."}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -1353,31 +1351,40 @@ function SessionDone({
   );
 }
 
-function GradeButton({
-  label,
-  hint,
-  accent,
+function SentenceFamiliarityRow({
   disabled,
-  onClick,
+  onFamiliar,
+  onUnfamiliar,
 }: {
-  label: string;
-  hint: string;
-  accent: string;
-  disabled?: boolean;
-  onClick: () => void;
+  disabled: boolean;
+  onFamiliar: () => void;
+  onUnfamiliar: () => void;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "rounded-xl border border-border px-3 py-3 text-left transition-all hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-50",
-        accent,
-      )}
-    >
-      <div className="text-[13.5px] font-medium">{label}</div>
-      <div className="text-[11px] opacity-80">{hint}</div>
-    </button>
+    <div className="mt-5 grid w-full grid-cols-2 gap-4 sm:gap-6">
+      <button
+        type="button"
+        onClick={onFamiliar}
+        disabled={disabled}
+        className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-border/70 bg-background/20 px-4 py-2 text-foreground transition-colors hover:border-foreground/35 hover:bg-background/45 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <span className="text-[15px] font-medium">熟</span>
+        <span className="mt-0.5 text-[11px] text-muted-foreground">
+          晚些再复习
+        </span>
+      </button>
+      <button
+        type="button"
+        onClick={onUnfamiliar}
+        disabled={disabled}
+        className="flex min-h-14 flex-col items-center justify-center rounded-xl border border-border/70 bg-background/20 px-4 py-2 text-foreground transition-colors hover:border-foreground/35 hover:bg-background/45 disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        <span className="text-[15px] font-medium">不熟</span>
+        <span className="mt-0.5 text-[11px] text-muted-foreground">
+          很快再复习
+        </span>
+      </button>
+    </div>
   );
 }
 
@@ -1386,6 +1393,11 @@ function Settings() {
     PLUGIN_ID,
     "autoPlay",
     true,
+  );
+  const [showKeyboardHints, setShowKeyboardHints] = usePluginSetting(
+    PLUGIN_ID,
+    "showKeyboardHints",
+    false,
   );
   return (
     <div className="space-y-3">
@@ -1398,6 +1410,16 @@ function Settings() {
           className="size-4"
         />
         Auto-play the sentence (front in recognition, back in production)
+      </label>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input
+          type="checkbox"
+          checked={showKeyboardHints}
+          disabled={!loaded}
+          onChange={(e) => setShowKeyboardHints(e.target.checked)}
+          className="size-4"
+        />
+        Show keyboard hints during study
       </label>
       <p className="text-[11.5px] text-muted-foreground">
         Source, direction, AI level, and save-to-card are chosen at the start of
