@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compactDefinitionEn,
   EXAMPLES_DELIMITER,
   formatPartOfSpeech,
   fromDict,
@@ -55,6 +56,22 @@ describe("formatPartOfSpeech", () => {
     expect(formatPartOfSpeech("special label")).toBe("special label");
     expect(formatPartOfSpeech("  ")).toBeNull();
     expect(formatPartOfSpeech(null)).toBeNull();
+  });
+});
+
+describe("compactDefinitionEn", () => {
+  it("keeps only the first slash-separated learner-dictionary sense", () => {
+    expect(
+      compactDefinitionEn(
+        "The ability to contain something / The amount a system can produce / A role or position",
+      ),
+    ).toBe("The ability to contain something");
+  });
+
+  it("truncates an unusually long first sense without splitting a word", () => {
+    const result = compactDefinitionEn("a ".repeat(160), 20);
+    expect(result.endsWith("…")).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(21);
   });
 });
 

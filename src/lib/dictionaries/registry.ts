@@ -67,6 +67,28 @@ export type DictionaryPack = {
  */
 export const DICTIONARY_PACKS: readonly DictionaryPack[] = [
   {
+    // Open English → Chinese coverage pack built by yomidevs from
+    // Wiktionary/Kaikki data. It is intentionally a supplement: when the
+    // richer Collins EN-ZH pack is installed, lookup ranking keeps Collins
+    // ahead of this broader fallback for overlapping headwords.
+    id: "en-yomitan-wiktionary",
+    name: "English Wiktionary (EN-ZH)",
+    lang: "en",
+    format: "yomitan",
+    defaultUrl:
+      "https://pub-c3d38cca4dc2403b88934c56748f5144.r2.dev/releases/latest/kty-en-zh.zip",
+    presets: [
+      {
+        label: "kty-en-zh (kaikki-to-yomitan, latest)",
+        url: "https://pub-c3d38cca4dc2403b88934c56748f5144.r2.dev/releases/latest/kty-en-zh.zip",
+      },
+    ],
+    description:
+      "Open English ↔ Chinese coverage from Wiktionary — useful as a supplement for words missing from a learner dictionary, with broad headword and inflection coverage.",
+    size: "~5 MB zipped · ~129k entries",
+    license: "CC BY-SA (Wiktionary)",
+  },
+  {
     id: "cc-cedict",
     name: "CC-CEDICT",
     lang: "zh",

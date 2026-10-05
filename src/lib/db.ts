@@ -3366,15 +3366,32 @@ export async function deleteDictionary(id: number): Promise<void> {
 
 const PERSONAL_DICT_NAME = "Personal";
 
+// The learner dictionary is the authoritative source when installed. The
+// open Wiktionary pack is deliberately a broad supplement for missing words,
+// not a replacement that should unexpectedly change an existing card's
+// definition. Other custom packs remain deterministic by install order.
+const COLLINS_DICT_NAME = "Collins COBUILD Advanced Learner EN-ZH";
+const ENGLISH_SUPPLEMENT_DICT_NAME = "English Wiktionary (EN-ZH)";
+
+function dictionaryPriority(name: string): number {
+  if (name === PERSONAL_DICT_NAME) return 0;
+  if (name === COLLINS_DICT_NAME) return 1;
+  if (name === ENGLISH_SUPPLEMENT_DICT_NAME) return 2;
+  return 3;
+}
+
 /** Stable-sort a language's dictionaries so the user's "Personal" dict
- *  comes first. Lookups build their hit index first-wins, so ordering
- *  Personal ahead of the packaged packs is what lets an edited entry
- *  shadow CC-CEDICT / JMdict for the same word. */
-function personalFirst<T extends { name: string }>(dicts: T[]): T[] {
+ *  comes first, then the curated learner dictionary, then the broad
+ *  supplement. Lookups build their hit index first-wins, so this ordering
+ *  also makes overlapping dictionary installs deterministic. */
+function orderedDictionaries<T extends { name: string; installedAt?: number; id?: number }>(
+  dicts: T[],
+): T[] {
   return [...dicts].sort(
     (a, b) =>
-      Number(b.name === PERSONAL_DICT_NAME) -
-      Number(a.name === PERSONAL_DICT_NAME),
+      dictionaryPriority(a.name) - dictionaryPriority(b.name) ||
+      (a.installedAt ?? 0) - (b.installedAt ?? 0) ||
+      (a.id ?? 0) - (b.id ?? 0),
   );
 }
 
@@ -4014,7 +4031,7 @@ export async function lookupDict(lang: string, word: string): Promise<DictEntry 
   if (!trimmed) return null;
 
   if (!isTauri()) {
-    const dicts = personalFirst(fb.dicts.filter((x) => x.lang === lang));
+    const dicts = orderedDictionaries(fb.dicts.filter((x) => x.lang === lang));
     for (const d of dicts) {
       const entries = fb.dictEntries.get(d.id) ?? [];
       const hit = entries.find(
@@ -4063,9 +4080,14 @@ export async function lookupDict(lang: string, word: string): Promise<DictEntry 
      FROM dict_entries e
      JOIN dictionaries d ON d.id = e.dict_id
      WHERE d.lang = $1 AND (e.word = $2 OR e.alt_word = $2)
-     ORDER BY CASE WHEN d.name = $3 THEN 0 ELSE 1 END
+     ORDER BY CASE
+       WHEN d.name = $3 THEN 0
+       WHEN d.name = $4 THEN 1
+       WHEN d.name = $5 THEN 2
+       ELSE 3
+     END, d.installed_at ASC, d.id ASC
      LIMIT 1`,
-    [lang, trimmed, PERSONAL_DICT_NAME],
+    [lang, trimmed, PERSONAL_DICT_NAME, COLLINS_DICT_NAME, ENGLISH_SUPPLEMENT_DICT_NAME],
   );
   if (exact.length > 0) {
     const r = exact[0];
@@ -4092,9 +4114,14 @@ export async function lookupDict(lang: string, word: string): Promise<DictEntry 
        JOIN dictionaries d ON d.id = e.dict_id
        WHERE d.lang = $1
          AND (LOWER(e.word) = $2 OR LOWER(e.alt_word) = $2)
-       ORDER BY CASE WHEN d.name = $3 THEN 0 ELSE 1 END
+       ORDER BY CASE
+         WHEN d.name = $3 THEN 0
+         WHEN d.name = $4 THEN 1
+         WHEN d.name = $5 THEN 2
+         ELSE 3
+       END, d.installed_at ASC, d.id ASC
        LIMIT 1`,
-      [lang, lower, PERSONAL_DICT_NAME],
+      [lang, lower, PERSONAL_DICT_NAME, COLLINS_DICT_NAME, ENGLISH_SUPPLEMENT_DICT_NAME],
     );
     if (ci.length > 0) {
       const r = ci[0];
@@ -4126,9 +4153,21 @@ export async function lookupDict(lang: string, word: string): Promise<DictEntry 
        WHERE d.lang = $1
          AND (e.word = $2 OR e.alt_word = $2
               OR LOWER(e.word) = $3 OR LOWER(e.alt_word) = $3)
-       ORDER BY CASE WHEN d.name = $4 THEN 0 ELSE 1 END
+       ORDER BY CASE
+         WHEN d.name = $4 THEN 0
+         WHEN d.name = $5 THEN 1
+         WHEN d.name = $6 THEN 2
+         ELSE 3
+       END, d.installed_at ASC, d.id ASC
        LIMIT 1`,
-      [lang, cand, candLower, PERSONAL_DICT_NAME],
+      [
+        lang,
+        cand,
+        candLower,
+        PERSONAL_DICT_NAME,
+        COLLINS_DICT_NAME,
+        ENGLISH_SUPPLEMENT_DICT_NAME,
+      ],
     );
     if (lem.length > 0) {
       const r = lem[0];
@@ -4169,8 +4208,15 @@ async function dictIdsForLang(lang: string): Promise<number[]> {
   }
   const db = await getDb();
   const rows = await db.select<{ id: number }[]>(
-    "SELECT id FROM dictionaries WHERE lang = $1",
-    [lang],
+    `SELECT id FROM dictionaries
+       WHERE lang = $1
+       ORDER BY CASE
+         WHEN name = $2 THEN 0
+         WHEN name = $3 THEN 1
+         WHEN name = $4 THEN 2
+         ELSE 3
+       END, installed_at ASC, id ASC`,
+    [lang, PERSONAL_DICT_NAME, COLLINS_DICT_NAME, ENGLISH_SUPPLEMENT_DICT_NAME],
   );
   const ids = rows.map((r) => r.id);
   dictIdCache.set(lang, ids);
@@ -4243,7 +4289,7 @@ export async function lookupDictBatch(
 
   if (!isTauri()) {
     // Personal dict first so its entries win the first-wins index below.
-    const dicts = personalFirst(fb.dicts.filter((x) => x.lang === lang));
+    const dicts = orderedDictionaries(fb.dicts.filter((x) => x.lang === lang));
     const allEntries = dicts.flatMap(
       (d) => fb.dictEntries.get(d.id) ?? [],
     );
@@ -4297,6 +4343,7 @@ export async function lookupDictBatch(
   // a few ms.
   const dictIds = await dictIdsForLang(lang);
   if (dictIds.length === 0) return out;
+  const dictRank = new Map(dictIds.map((id, index) => [id, index]));
   // The Personal dict (if any) wins ties: when both it and a packaged
   // pack hold the clicked word, the user's edited entry is the hit.
   const personalId = await personalDictIdForLang(lang);
@@ -4326,6 +4373,14 @@ export async function lookupDictBatch(
       WHERE e.dict_id IN (${dictPh})
         AND e.alt_word IN (${wordPh})`,
     [...dictIds, ...params, ...dictIds, ...params],
+  );
+
+  // UNION ALL does not promise row order. Sort explicitly so the
+  // first-wins index below follows the same Personal → Collins → supplement
+  // priority as single-word lookup.
+  exactRows.sort(
+    (a, b) => (dictRank.get(a.dict_id) ?? Number.MAX_SAFE_INTEGER) -
+      (dictRank.get(b.dict_id) ?? Number.MAX_SAFE_INTEGER),
   );
 
   // Index the exact-match rows by both word and alt_word so callers
@@ -4383,6 +4438,10 @@ export async function lookupDictBatch(
         WHERE e.dict_id IN (${ciDictPh})
           AND LOWER(e.alt_word) IN (${ciWordPh})`,
       [...dictIds, ...lowers, ...dictIds, ...lowers],
+    );
+    ciRows.sort(
+      (a, b) => (dictRank.get(a.dict_id) ?? Number.MAX_SAFE_INTEGER) -
+        (dictRank.get(b.dict_id) ?? Number.MAX_SAFE_INTEGER),
     );
     const ciIndex = new Map<string, DictEntry>();
     for (const r of ciRows) {

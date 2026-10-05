@@ -11,6 +11,7 @@ import {
   GraduationCap,
   GripVertical,
   Headphones,
+  Home,
   LayoutDashboard,
   Layers,
   Maximize2,
@@ -67,6 +68,7 @@ import {
   listSessions,
   listVocab,
   listWorkspaceReviews,
+  startOfLocalDayUnix,
   updateChapter,
   type Collection,
   type LibraryChapter,
@@ -369,8 +371,8 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
                   setShowDashboard(false);
                 }}
               >
-                <BookOpenText className="size-3.5" />
-                Today
+                <Home className="size-3.5" />
+                Home
               </Button>
             )}
             {showDashboard && editMode ? (
@@ -472,9 +474,15 @@ function TodayStudyHome({
   resumableStudySession: StudySession | null;
   onResumeStudy: () => void;
 }) {
-  const queue = ctx.sessionQueue;
-  const newCount = queue.filter((card) => card.status === "new").length;
-  const reviewCount = queue.length - newCount;
+  const studiedToday = useMemo(() => {
+    const since = startOfLocalDayUnix();
+    return new Set(
+      ctx.reviews
+        .filter((review) => review.reviewedAt >= since)
+        .map((review) => review.vocabId),
+    ).size;
+  }, [ctx.reviews]);
+  const totalCards = ctx.vocab.length;
 
   return (
     <div className="space-y-7">
@@ -513,8 +521,8 @@ function TodayStudyHome({
               A small step is enough.
             </h2>
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-              Your queue is ready. Focus on the cards in front of you and leave
-              the long-term numbers for another day.
+              See what you have learned today, then start a focused review when
+              you are ready.
             </p>
           </div>
           <Button
@@ -527,10 +535,9 @@ function TodayStudyHome({
           </Button>
         </div>
 
-        <div className="mt-7 grid grid-cols-3 gap-2 sm:max-w-xl sm:gap-3">
-          <TodayQueueStat label="Due" value={reviewCount} />
-          <TodayQueueStat label="New" value={newCount} />
-          <TodayQueueStat label="Total" value={queue.length} />
+        <div className="mt-7 grid grid-cols-2 gap-2 sm:max-w-md sm:gap-3">
+          <TodayStudyStat label="Studied today" value={studiedToday} />
+          <TodayStudyStat label="All cards" value={totalCards} />
         </div>
       </section>
 
@@ -538,7 +545,7 @@ function TodayStudyHome({
   );
 }
 
-function TodayQueueStat({ label, value }: { label: string; value: number }) {
+function TodayStudyStat({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-2xl border border-border/50 bg-background/25 px-4 py-3 backdrop-blur-sm">
       <p className="text-2xl font-semibold tabular-nums tracking-tight">{value}</p>

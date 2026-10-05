@@ -138,6 +138,13 @@ function StudyView({ ctx }: StudyViewProps) {
   );
 
   const [source, setSource] = useState<SourceMode | null>(savedSource);
+  // Keep source selection separate from the active session. The setup screen
+  // should make the next action explicit instead of silently starting a
+  // potentially expensive library/AI build when a large option card is
+  // clicked.
+  const [selectedSource, setSelectedSource] = useState<SourceMode | null>(
+    savedSource,
+  );
   const [aiLevel, setAiLevel] = useState<AiLevel>(savedLevel);
   const [direction, setDirection] = useState<Direction>(savedDirection);
   const [saveOn, setSaveOn] = useState<boolean>(savedSaveToDict);
@@ -492,7 +499,9 @@ function StudyView({ ctx }: StudyViewProps) {
         setDrillMode={ctx.setDrillMode}
         srsAnchorState={ctx.srsAnchorState}
         onBack={ctx.onChangeMode}
-        onPick={(picked) => {
+        selectedSource={selectedSource}
+        onPick={(picked) => setSelectedSource(picked)}
+        onStart={(picked) => {
           setSource(picked);
           setSavedSource(picked);
         }}
@@ -1090,7 +1099,9 @@ function SetupScreen({
   setDrillMode,
   srsAnchorState,
   onBack,
+  selectedSource,
   onPick,
+  onStart,
 }: {
   aiLevel: AiLevel;
   setAiLevel: (l: AiLevel) => void;
@@ -1103,7 +1114,9 @@ function SetupScreen({
   setDrillMode: (next: boolean) => void;
   srsAnchorState: "unknown" | "free" | "alreadyAnchored";
   onBack?: () => void;
+  selectedSource: SourceMode | null;
   onPick: (mode: SourceMode) => void;
+  onStart: (mode: SourceMode) => void;
 }) {
   const levels: { id: AiLevel; label: string; desc: string }[] = [
     {
@@ -1144,7 +1157,22 @@ function SetupScreen({
       setDrillMode={setDrillMode}
       srsAnchorState={srsAnchorState}
       onBack={onBack}
+      onStart={() => {
+        if (selectedSource) onStart(selectedSource);
+      }}
+      startLabel="Start sentence cards"
+      startDisabled={selectedSource == null}
+      startHint={
+        selectedSource == null
+          ? "Choose a source above to continue"
+          : selectedSource === "ai"
+            ? "The AI will build the deck before the first card"
+            : "Use example sentences from your library"
+      }
     >
+      <p className="-mb-2 text-[12px] text-muted-foreground">
+        Choose a source, then press <span className="font-medium text-foreground">Start sentence cards</span> below.
+      </p>
       <div className="rounded-2xl border border-border bg-muted/30 p-4">
         <p className="mb-3 text-[12px] uppercase tracking-wider text-muted-foreground">
           Direction
@@ -1197,7 +1225,12 @@ function SetupScreen({
         <button
           type="button"
           onClick={() => onPick("library")}
-          className="group flex flex-col gap-2 rounded-2xl border border-border bg-card p-5 text-left shadow-sm transition-all hover:border-foreground/30 hover:shadow-md"
+          className={cn(
+            "group flex flex-col gap-2 rounded-2xl border p-5 text-left shadow-sm transition-all",
+            selectedSource === "library"
+              ? "border-foreground/60 bg-card shadow-md"
+              : "border-border bg-card hover:border-foreground/30 hover:shadow-md",
+          )}
         >
           <div className="flex items-center gap-2">
             <div className="flex size-9 items-center justify-center rounded-lg bg-foreground/5 text-foreground/80 group-hover:bg-foreground/10">
@@ -1215,11 +1248,14 @@ function SetupScreen({
           type="button"
           onClick={() => onPick("ai")}
           disabled={!providerReady}
+          aria-pressed={selectedSource === "ai"}
           className={cn(
             "group flex flex-col gap-2 rounded-2xl border p-5 text-left shadow-sm transition-all",
-            providerReady
-              ? "border-border bg-card hover:border-foreground/30 hover:shadow-md"
-              : "cursor-not-allowed border-dashed border-border/50 bg-muted/30 opacity-60",
+            providerReady && selectedSource === "ai"
+              ? "border-foreground/60 bg-card shadow-md"
+              : providerReady
+                ? "border-border bg-card hover:border-foreground/30 hover:shadow-md"
+                : "cursor-not-allowed border-dashed border-border/50 bg-muted/30 opacity-60",
           )}
         >
           <div className="flex items-center gap-2">

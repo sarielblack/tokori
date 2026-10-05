@@ -68,7 +68,12 @@ import {
   useStudyConfig,
 } from "@/lib/study-config";
 import { lookupDictCached } from "@/lib/word-lookup";
-import { formatPartOfSpeech, fromDict, type LookupResult } from "@/lib/lookup-result";
+import {
+  compactDefinitionEn,
+  formatPartOfSpeech,
+  fromDict,
+  type LookupResult,
+} from "@/lib/lookup-result";
 import { gradeIntervalHints } from "@/lib/fsrs";
 import {
   FSRS_INTERVAL_HINTS,
@@ -91,6 +96,7 @@ import {
 import { cn } from "@/lib/utils";
 import { HOSTED } from "@/lib/build-flags";
 import { navigateToTab } from "@/lib/nav-event";
+import { SpellingStudyView } from "./spelling-practice";
 
 // How far ahead a card is re-inserted when it needs to come back later
 // in the same session. "Again" grades retry soon; a freshly-introduced
@@ -116,6 +122,20 @@ const vocabRecall: StudyPlugin = {
 export default vocabRecall;
 
 function StudyView({ ctx }: StudyViewProps) {
+  const [spellingMode] = usePluginSetting<boolean>(
+    vocabRecall.meta.id,
+    "spellingMode",
+    false,
+  );
+
+  if (spellingMode && ctx.workspace.targetLang === "en") {
+    return <SpellingStudyView ctx={ctx} />;
+  }
+
+  return <VocabRecallStudyView ctx={ctx} />;
+}
+
+function VocabRecallStudyView({ ctx }: StudyViewProps) {
   const { config } = useStudyConfig(ctx.workspace.id, ctx.workspace.targetLang);
   const tts = useTTS();
   const { active: provider, sendChat } = useProviderConfigs();
@@ -377,6 +397,10 @@ function StudyView({ ctx }: StudyViewProps) {
       : tts.config.englishAccent === "us"
         ? dictionaryEntry?.readingUs ?? dictionaryEntry?.readingUk ?? dictionaryEntry?.reading
         : dictionaryEntry?.readingUs ?? dictionaryEntry?.readingUk ?? dictionaryEntry?.reading);
+  // Imported cards normally carry their own native gloss. If an older or
+  // externally imported card does not, let the installed dictionary fill the
+  // gap instead of showing a blank meaning section.
+  const displayedGloss = card?.gloss?.trim() || dictionaryEntry?.gloss || null;
 
   // First-time presentation ("study before the quiz"). A card that has
   // never been graded (lastReview == null — fresh from the chat tool,
@@ -1070,14 +1094,14 @@ function StudyView({ ctx }: StudyViewProps) {
                 the first-time intro reveal. */}
             {(stage === "graded" || introShowing) && (
               <div className="mt-7 space-y-3">
-                {card.gloss && (
+                {displayedGloss && (
                   <p className="text-[17px] leading-relaxed text-foreground/90">
-                    {card.gloss.split(/;\s+/).slice(0, 4).join(" · ")}
+                    {displayedGloss.split(/;\s+/).slice(0, 4).join(" · ")}
                   </p>
                 )}
-                {dictionaryEntry?.definitionEn && (
+                {compactDefinitionEn(dictionaryEntry?.definitionEn) && (
                   <p className="max-w-3xl text-[13px] italic leading-relaxed text-muted-foreground">
-                    {dictionaryEntry.definitionEn}
+                    {compactDefinitionEn(dictionaryEntry?.definitionEn)}
                   </p>
                 )}
                 {dictionaryEntry?.examples && dictionaryEntry.examples.length > 0 && (
@@ -2627,6 +2651,12 @@ function VocabRecallSettings() {
       "showKeyboardHints",
       false,
     );
+  const [spellingMode, setSpellingMode, spellingLoaded] =
+    usePluginSetting<boolean>(
+      vocabRecall.meta.id,
+      "spellingMode",
+      false,
+    );
   return (
     <div className="space-y-3">
       {isTwoQuestionLang && (
@@ -2647,6 +2677,26 @@ function VocabRecallSettings() {
               one step, skipping the “do you know the pronunciation?” gate. Off
               keeps the two-step flow — recall the pronunciation first, then
               the meaning.
+            </span>
+          </span>
+        </label>
+      )}
+      {lang === "en" && (
+        <label className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={spellingMode}
+            onChange={(e) => setSpellingMode(e.target.checked)}
+            disabled={!spellingLoaded}
+            className="mt-1"
+          />
+          <span>
+            <span className="text-[13px] font-medium">
+              Use spelling practice inside Vocab recall
+            </span>
+            <span className="block text-[11.5px] text-muted-foreground">
+              Type each English word from its meaning and context. Due and
+              review cards stay first in the same review queue.
             </span>
           </span>
         </label>

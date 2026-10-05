@@ -38,6 +38,7 @@ describe("packsForLanguage", () => {
     expect(packsForLanguage("es").map((p) => p.id)).toContain("es-wiktionary");
     expect(packsForLanguage("es").map((p) => p.id)).toContain("es-yomitan-wiktionary");
     expect(packsForLanguage("de").map((p) => p.id)).toContain("de-yomitan-wiktionary");
+    expect(packsForLanguage("en").map((p) => p.id)).toContain("en-yomitan-wiktionary");
   });
 
   it("does not ship any Kaikki JSONL packs", () => {
@@ -66,7 +67,7 @@ describe("packsForLanguage", () => {
   });
 
   it("returns [] for languages with no packaged dictionary", () => {
-    expect(packsForLanguage("en")).toEqual([]);
+    expect(packsForLanguage("fr")).toEqual([]);
   });
 });
 

@@ -345,10 +345,6 @@ function StudyMode({
   // A recent-session click leaves a one-shot resume intent. Restore only for
   // that explicit action; a normal visit still opens on the picker.
   const resumeAttemptedRef = useRef<number | null>(null);
-  // Once a workspace has auto-opened its configured default, keep the picker
-  // available when the user deliberately chooses "Change mode". Without
-  // this guard the default effect would immediately remount the same plugin.
-  const autoPickedWorkspaceRef = useRef<number | null>(null);
   useEffect(() => {
     if (picked || summary || !workspace || !vocab || !dueVocab) return;
     const sessionId = getVocabRecallResumeIntent(workspace.id);
@@ -378,42 +374,10 @@ function StudyMode({
     });
   }, [picked, summary, workspace, vocab, dueVocab, plugins, session]);
 
-  // The workspace's Settings → Study → Default study mode is the normal
-  // entry point. The mode picker remains available through the visible
-  // "Change mode" control, but routine visits should not ask the same
-  // question over and over.
-  useEffect(() => {
-    if (
-      picked ||
-      summary ||
-      !workspace ||
-      !vocab ||
-      !dueVocab ||
-      !studyCfg.loaded ||
-      autoPickedWorkspaceRef.current === workspace.id ||
-      getVocabRecallResumeIntent(workspace.id) != null
-    ) {
-      return;
-    }
-    const defaultPlugin =
-      plugins.find((p) => p.meta.id === studyCfg.config.defaultPlugin) ??
-      plugins[0];
-    if (!defaultPlugin) return;
-    autoPickedWorkspaceRef.current = workspace.id;
-    session.resume();
-    setPicked(defaultPlugin);
-    localStorage.setItem(ACTIVE_PLUGIN_KEY, defaultPlugin.meta.id);
-  }, [
-    vocab,
-    dueVocab,
-    picked,
-    plugins,
-    session,
-    studyCfg.config.defaultPlugin,
-    studyCfg.loaded,
-    summary,
-    workspace,
-  ]);
+  // Entering the Flashcards tab always lands on the mode picker. The user
+  // can then deliberately choose vocab recall, spelling practice, or one of
+  // the sentence modes instead of being dropped into a prestart screen that
+  // only reports how many cards are ready.
 
   // Load vocab + due once per workspace. Two modes:
   //

@@ -85,6 +85,24 @@ export function formatPartOfSpeech(value: string | null | undefined): string | n
   return remainder ? `${label} ${remainder}` : label;
 }
 
+/**
+ * Keep learner cards readable when a dictionary carries a full article-like
+ * definition. Collins stores multiple senses in one string separated by
+ * slashes; the card needs only the first concise sense while the full entry
+ * remains available in the dictionary popover/search views.
+ */
+export function compactDefinitionEn(
+  value: string | null | undefined,
+  maxChars = 220,
+): string | null {
+  const text = value?.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  const firstSense = text.split(/\s+\/\s+/)[0]?.trim() ?? text;
+  if (firstSense.length <= maxChars) return firstSense;
+  const cut = firstSense.slice(0, maxChars).replace(/\s+\S*$/, "").trim();
+  return `${cut || firstSense.slice(0, maxChars).trim()}…`;
+}
+
 export function fromMini(word: string): LookupResult | null {
   const e = CEDICT_MINI[word];
   return e ? { reading: e.pinyin, gloss: e.gloss } : null;

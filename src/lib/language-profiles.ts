@@ -154,7 +154,7 @@ export const LANGUAGE_PROFILES: Record<LanguageCode, LanguageProfile> = {
     bcp47: "en-US",
     tokenizer: "intl",
     hasReadings: false,
-    recommendedDict: null,
+    recommendedDict: "en-yomitan-wiktionary",
     greeting: "What would you like to practice today?",
     hello: "Hello",
     onboardingPreview: "Hi! I'm your conversation partner.",

@@ -52,6 +52,25 @@ describe("personal-dict overrides shadow packaged dictionaries", () => {
     );
   });
 
+  it("keeps Collins ahead of the broad English supplement", async () => {
+    const lang = "en";
+    await installDictionary({
+      lang,
+      name: "English Wiktionary (EN-ZH)",
+      entries: [{ word: "capacity", altWord: null, reading: null, gloss: "补充释义" }],
+    });
+    await installDictionary({
+      lang,
+      name: "Collins COBUILD Advanced Learner EN-ZH",
+      entries: [{ word: "capacity", altWord: null, reading: null, gloss: "Collins 释义" }],
+    });
+
+    expect((await lookupDict(lang, "capacity"))?.gloss).toBe("Collins 释义");
+    expect((await lookupDictBatch(lang, ["capacity"])).get("capacity")?.gloss).toBe(
+      "Collins 释义",
+    );
+  });
+
   it("the override wins even through the case-insensitive lookup path", async () => {
     const lang = "de";
     await installDictionary({

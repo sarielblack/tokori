@@ -1045,18 +1045,49 @@ fn parse_yomitan_zip(bytes: &[u8]) -> Result<Vec<LangDictEntry>, String> {
             if glosses.is_empty() {
                 continue;
             }
+            let gloss = glosses.into_iter().take(8).collect::<Vec<_>>().join("; ");
+            // Yomitan keeps grammatical tags in tuple[2], separately from
+            // the visible glossary. Preserve the common part-of-speech tags
+            // in Tokori's existing metadata envelope so imported English
+            // fallback entries can still render `n.`, `v.`, `adj.`, etc.
+            let gloss = match yomitan_part_of_speech(tuple[2].as_str().unwrap_or("")) {
+                Some(pos) => format!(
+                    "TOKORI_DICT_META_V1{}\n{}",
+                    serde_json::json!({ "partOfSpeech": pos }),
+                    gloss
+                ),
+                None => gloss,
+            };
             out.push(LangDictEntry {
                 word: word.to_string(),
                 alt_word: String::new(),
                 reading: reading.to_string(),
                 // Cap the joined gloss the same way JMdict does so
                 // verbose Wiktionary entries don't bloat the row.
-                gloss: glosses.into_iter().take(8).collect::<Vec<_>>().join("; "),
+                gloss,
             });
         }
     }
 
     Ok(out)
+}
+
+fn yomitan_part_of_speech(tags: &str) -> Option<&'static str> {
+    let lower = tags.to_ascii_lowercase();
+    let tag = lower.split_whitespace().next()?;
+    match tag {
+        "n" | "noun" => Some("N"),
+        "v" | "verb" => Some("V"),
+        "adj" | "adjective" => Some("ADJ"),
+        "adv" | "adverb" => Some("ADV"),
+        "prep" | "preposition" => Some("PREP"),
+        "conj" | "conjunction" => Some("CONJ"),
+        "pron" | "pronoun" => Some("PRON"),
+        "det" | "determiner" => Some("DET"),
+        "aux" | "auxiliary" => Some("AUX"),
+        "modal" => Some("MODAL"),
+        _ => None,
+    }
 }
 
 fn is_yomitan_term_bank(name: &str) -> bool {
