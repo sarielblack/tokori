@@ -229,7 +229,10 @@ export function DashboardView({ onNavigate }: { onNavigate: (t: TabId) => void }
     if (id == null) return null;
     return (
       sessions.find(
-        (item) => item.id === id && item.kind === "review",
+        (item) =>
+          item.id === id &&
+          item.kind === "review" &&
+          (item.wordsSeen > 0 || item.wordsSaved > 0),
       ) ?? null
     );
   }, [sessions, workspaceId]);

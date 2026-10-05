@@ -81,7 +81,20 @@ export function getVocabRecallSnapshotSessionId(workspaceId: number): number | n
   try {
     const raw = window.localStorage.getItem(keyFor(workspaceId));
     if (!raw) return null;
-    const id = Number((JSON.parse(raw) as Partial<VocabRecallSnapshot>).sessionId);
+    const parsed = JSON.parse(raw) as Partial<VocabRecallSnapshot>;
+    // A session that was only opened, but never had a card graded, is not
+    // something the user can meaningfully resume. Clear that empty snapshot
+    // instead of surfacing a misleading "0 cards" continuation entry.
+    const reviewedCount = parsed.reviewedCount;
+    if (
+      reviewedCount == null ||
+      !Number.isInteger(reviewedCount) ||
+      reviewedCount <= 0
+    ) {
+      clearVocabRecallSnapshot(workspaceId);
+      return null;
+    }
+    const id = Number(parsed.sessionId);
     return Number.isInteger(id) && id > 0 ? id : null;
   } catch {
     return null;
@@ -117,6 +130,8 @@ export function loadVocabRecallSnapshot(
       !Number.isInteger(parsed.idx) ||
       !Number.isInteger(parsed.sessionSize) ||
       parsed.sessionSize <= 0 ||
+      !Number.isInteger(parsed.reviewedCount) ||
+      parsed.reviewedCount <= 0 ||
       !Array.isArray(parsed.introducedIds) ||
       !Array.isArray(parsed.reviewedCards)
     ) {
